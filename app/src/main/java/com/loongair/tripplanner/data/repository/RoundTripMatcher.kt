@@ -7,6 +7,7 @@ import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.local.TripTemplateEntity
 import com.loongair.tripplanner.data.remote.CityMeta
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
+import com.loongair.tripplanner.util.ChinaClock
 import java.time.DayOfWeek
 import java.time.Duration
 import java.time.LocalDate
@@ -128,7 +129,7 @@ object RoundTripMatcher {
      */
     fun pickWeeklySampleDates(
         calMap: Map<String, Int>,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): Map<Int, String> {
         val parsed = calMap.entries
             .mapNotNull { (k, v) ->
@@ -160,7 +161,7 @@ object RoundTripMatcher {
      */
     fun pickDualPatternSampleDates(
         calMap: Map<String, Int>,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): Pair<String?, String?> {
         val byDow = pickWeeklySampleDates(calMap, baseDate)
         val oddDate = listOf(5, 1, 3, 7).firstNotNullOfOrNull { byDow[it] }
@@ -198,7 +199,7 @@ object RoundTripMatcher {
      */
     fun deriveFrequencyFromCalendar(
         calMap: Map<String, Int>,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): String {
         if (calMap.isEmpty()) return ""
         val maxDate = baseDate.plusDays(28)
@@ -219,7 +220,7 @@ object RoundTripMatcher {
      */
     fun pickBestSampleDate(
         calMap: Map<String, Int>,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): String? {
         val entries = calMap.entries
             .mapNotNull { (k, v) ->
@@ -282,7 +283,7 @@ object RoundTripMatcher {
      */
     fun resolveTemplateDatePairs(
         template: TripTemplateEntity,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): List<Pair<LocalDate, LocalDate>> {
         val days = parseTemplateOutDays(template)
         val retOffset = template.retOffsetDays.coerceAtLeast(0).toLong()
@@ -313,7 +314,7 @@ object RoundTripMatcher {
      */
     fun resolveTemplateDates(
         template: TripTemplateEntity,
-        baseDate: LocalDate = LocalDate.now()
+        baseDate: LocalDate = ChinaClock.today()
     ): Pair<LocalDate, LocalDate> = resolveTemplateDatePairs(template, baseDate).first()
 
     /**
@@ -447,7 +448,7 @@ object RoundTripMatcher {
     fun buildReminderSuggestions(
         plan: TripPlanEntity,
         nowMillis: Long = System.currentTimeMillis(),
-        zoneId: ZoneId = ZoneId.systemDefault()
+        zoneId: ZoneId = ChinaClock.ZONE
     ): List<ReminderSuggestion> {
         val outDate = runCatching { LocalDate.parse(plan.outboundDate) }.getOrNull() ?: return emptyList()
         val retDate = runCatching { LocalDate.parse(plan.returnDate) }.getOrNull() ?: outDate

@@ -11,11 +11,16 @@ import com.loongair.tripplanner.data.local.ReminderEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.local.TripTemplateEntity
+import com.loongair.tripplanner.data.remote.ApiRateLimitException
 import com.loongair.tripplanner.data.remote.ChinaProvincePath
 import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.CityMeta
+import com.loongair.tripplanner.data.remote.CitySyncSummary
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.data.remote.LoongAirApi
+import com.loongair.tripplanner.data.remote.SessionExpiredException
+import com.loongair.tripplanner.util.ChinaClock
+import com.loongair.tripplanner.util.suspendRunCatching
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.Flow
@@ -57,7 +62,7 @@ class FlightRepository(
         if (db.tripTemplateDao().count() == 0) {
             db.tripTemplateDao().insertAll(RoundTripMatcher.defaultTemplates())
         }
-        val todayStr = LocalDate.now().toString()
+        val todayStr = ChinaClock.today().toString()
         db.calendarCacheDao().deleteExpired(todayStr)
         db.seatSnapshotDao().deleteExpired(todayStr)
 
@@ -318,20 +323,29 @@ class FlightRepository(
             routeEntities
         }
 
+    private inline fun <T> runSyncStep(block: () -> T): Result<T> {
+        return suspendRunCatching(block).onFailure { err ->
+            if (err is SessionExpiredException || err is ApiRateLimitException) {
+                throw err
+            }
+        }
+    }
+
     /**
      * 优先同步「一个城市的所有航线」（直连长龙官方接口，不依赖任何本地种子）：
      * 1. 拉取该城市全部官方可达目的地机场 -> 写入 official_airports & official_routes
-     * 2. 逐条拉取去程与返程 60 天放票日历 + 样本日真实班次时刻 -> 反推班期并写入 flight_routes
+     * 2. 逐条拉取去程与返程放票日历 + 样本日真实班次时刻 -> 反推班期并写入 flight_routes
+     * 3. 统计日历或班次失败的航线数并返回 CitySyncSummary，不静默吞错
      */
     suspend fun syncCityFullRoutes(
         rawCityOrCode: String,
         onDestinationsReady: suspend (originCity: String, count: Int) -> Unit = { _, _ -> },
         onRouteProgress: suspend (done: Int, total: Int, destCity: String) -> Unit = { _, _, _ -> }
-    ): Pair<String, Int> = withContext(Dispatchers.IO) {
+    ): CitySyncSummary = withContext(Dispatchers.IO) {
         val originCity = CityIataMapper.toCityName(rawCityOrCode.trim())
         val officialDests = syncOfficialRoutesForOrigin(originCity)
         if (officialDests.isEmpty()) {
-            return@withContext originCity to 0
+            return@withContext CitySyncSummary(originCity = originCity, totalRoutes = 0)
         }
 
         authPrefs.setHomeCity(originCity)
@@ -339,15 +353,24 @@ class FlightRepository(
 
         val total = officialDests.size
         var done = 0
+        var failedCal = 0
+        var failedSched = 0
+        val failedDests = linkedSetOf<String>()
+
         for (route in officialDests) {
             val destCity = route.toCity
             onRouteProgress(done, total, destCity)
 
-            // 1) 去程：60天日历 + 双模式（一三五日 & 二四六）采样真实班次以区分隔日不同航班
-            val outCal = runCatching { refreshRouteCalendar(originCity, destCity) }.getOrDefault(emptyMap())
+            // 1) 去程：放票日历 + 双模式（一三五日 & 二四六）采样真实班次以区分隔日不同航班
+            val outCalRes = runSyncStep { refreshRouteCalendar(originCity, destCity) }
+            if (outCalRes.isFailure) {
+                failedCal++
+                failedDests.add(destCity)
+            }
+            val outCal = outCalRes.getOrDefault(emptyMap())
             val outCalDows = RoundTripMatcher.deriveFrequencyFromCalendar(outCal)
             val (outOddDate, outEvenDate) = RoundTripMatcher.pickDualPatternSampleDates(outCal)
-            syncDirectionByDualSamples(
+            val outSchedOk = syncDirectionByDualSamples(
                 fromCity = originCity,
                 toCity = destCity,
                 fromIata = route.fromIata,
@@ -356,10 +379,18 @@ class FlightRepository(
                 evenDate = outEvenDate,
                 calOperatingDows = outCalDows
             )
+            if (!outSchedOk) {
+                failedSched++
+                failedDests.add(destCity)
+            }
 
-            // 2) 返程：60天日历 + 双模式采样真实班次（使往返配对立刻可用且不虚标每日）
-            delay(Random.nextLong(220, 400))
-            val retCal = runCatching { refreshRouteCalendar(destCity, originCity) }.getOrDefault(emptyMap())
+            // 2) 返程：放票日历 + 双模式采样真实班次（使往返配对立刻可用且不虚标每日）
+            val retCalRes = runSyncStep { refreshRouteCalendar(destCity, originCity) }
+            if (retCalRes.isFailure) {
+                failedCal++
+                failedDests.add(destCity)
+            }
+            val retCal = retCalRes.getOrDefault(emptyMap())
             val retCalDows = RoundTripMatcher.deriveFrequencyFromCalendar(retCal)
             val (retOddDate, retEvenDate) = RoundTripMatcher.pickDualPatternSampleDates(retCal)
             if (retOddDate != null || retEvenDate != null) {
@@ -376,7 +407,7 @@ class FlightRepository(
                         )
                     )
                 )
-                syncDirectionByDualSamples(
+                val retSchedOk = syncDirectionByDualSamples(
                     fromCity = destCity,
                     toCity = originCity,
                     fromIata = route.toIata,
@@ -385,15 +416,25 @@ class FlightRepository(
                     evenDate = retEvenDate,
                     calOperatingDows = retCalDows
                 )
+                if (!retSchedOk) {
+                    failedSched++
+                    failedDests.add(destCity)
+                }
             }
 
             done++
             onRouteProgress(done, total, destCity)
             if (done < total) {
-                delay(Random.nextLong(280, 520))
+                delay(Random.nextLong(120, 260))
             }
         }
-        originCity to officialDests.size
+        CitySyncSummary(
+            originCity = originCity,
+            totalRoutes = officialDests.size,
+            failedCalendarCount = failedCal,
+            failedScheduleCount = failedSched,
+            failedDestinations = failedDests.toList()
+        )
     }
 
     private suspend fun syncDirectionByDualSamples(
@@ -404,17 +445,18 @@ class FlightRepository(
         oddDate: String?,
         evenDate: String?,
         calOperatingDows: String
-    ) {
-        if (oddDate == null && evenDate == null) return
+    ): Boolean {
+        if (oddDate == null && evenDate == null) return true
+        var allOk = true
         val oddSeats = if (oddDate != null) {
-            delay(Random.nextLong(180, 320))
-            runCatching { refreshRouteSeats(fromCity, toCity, oddDate, updateFlightRoutes = false) }
-                .getOrDefault(emptyList())
+            val r = runSyncStep { refreshRouteSeats(fromCity, toCity, oddDate, updateFlightRoutes = false) }
+            if (r.isFailure) allOk = false
+            r.getOrDefault(emptyList())
         } else emptyList()
         val evenSeats = if (evenDate != null) {
-            delay(Random.nextLong(180, 320))
-            runCatching { refreshRouteSeats(fromCity, toCity, evenDate, updateFlightRoutes = false) }
-                .getOrDefault(emptyList())
+            val r = runSyncStep { refreshRouteSeats(fromCity, toCity, evenDate, updateFlightRoutes = false) }
+            if (r.isFailure) allOk = false
+            r.getOrDefault(emptyList())
         } else emptyList()
 
         val oddMap = oddSeats.distinctBy { "${it.flightNo}|${it.depTime}" }.associateBy { it.flightNo.ifBlank { it.depTime } }
@@ -423,7 +465,7 @@ class FlightRepository(
             addAll(oddMap.keys)
             addAll(evenMap.keys)
         }
-        if (allKeys.isEmpty()) return
+        if (allKeys.isEmpty()) return allOk
 
         val calSet = calOperatingDows.filter { it in '1'..'7' }.map { it - '0' }.toSet()
         val oddGroup = setOf(1, 3, 5, 7)
@@ -458,6 +500,7 @@ class FlightRepository(
             db.flightRouteDao().deleteForRoute(fromCity, toCity)
             db.flightRouteDao().insertAll(entities)
         }
+        return allOk
     }
 
     /**
@@ -469,7 +512,7 @@ class FlightRepository(
     ): List<FlightRouteEntity> = withContext(Dispatchers.IO) {
         var calMap = getRouteCalendarMap(fromCity, toCity)
         if (calMap.isEmpty()) {
-            calMap = runCatching { refreshRouteCalendar(fromCity, toCity) }.getOrDefault(emptyMap())
+            calMap = runSyncStep { refreshRouteCalendar(fromCity, toCity) }.getOrDefault(emptyMap())
         }
         val sampleByDow = RoundTripMatcher.pickWeeklySampleDates(calMap)
         if (sampleByDow.isEmpty()) return@withContext db.flightRouteDao().getRoutes(fromCity, toCity)
@@ -477,13 +520,13 @@ class FlightRepository(
         val flightsByDow = linkedMapOf<Int, List<LiveFlightSeat>>()
         for ((idx, entry) in sampleByDow.entries.withIndex()) {
             val (dow, dateStr) = entry
-            val seats = runCatching { refreshRouteSeats(fromCity, toCity, dateStr, updateFlightRoutes = false) }
+            val seats = runSyncStep { refreshRouteSeats(fromCity, toCity, dateStr, updateFlightRoutes = false) }
                 .getOrDefault(emptyList())
             if (seats.isNotEmpty()) {
                 flightsByDow[dow] = seats
             }
             if (idx < sampleByDow.size - 1) {
-                delay(Random.nextLong(180, 320))
+                delay(Random.nextLong(80, 180))
             }
         }
         if (flightsByDow.isEmpty()) return@withContext db.flightRouteDao().getRoutes(fromCity, toCity)
@@ -551,7 +594,7 @@ class FlightRepository(
         if (officialRoutes.isEmpty() && allFlights.isEmpty()) return@withContext emptyList()
 
         val metaMap = getSyncedCityMetadata().associateBy { it.city }
-        val todayStr = LocalDate.now().toString()
+        val todayStr = ChinaClock.today().toString()
         val availCals = db.calendarCacheDao().getAllAvailable(todayStr)
             .groupBy { "${it.fromCity}|${it.toCity}" }
 
@@ -605,16 +648,59 @@ class FlightRepository(
         )
     }
 
+    /**
+     * 单航线增量摘要构建：避免查单日余票、刷新单条日历或校准单条班期时重读全量数据库。
+     */
+    suspend fun getSingleNetworkRouteSummary(fromCity: String, toCity: String): NetworkRouteSummary? =
+        withContext(Dispatchers.IO) {
+            val off = db.officialRouteDao().getOne(fromCity, toCity)
+            val flights = db.flightRouteDao().getRoutes(fromCity, toCity).sortedBy { it.depTime }
+            if (off == null && flights.isEmpty()) return@withContext null
+
+            val fromAp = db.officialAirportDao().getByCity(fromCity)
+            val toAp = db.officialAirportDao().getByCity(toCity)
+            val todayStr = ChinaClock.today().toString()
+            val cals = db.calendarCacheDao().getAllForRoute(fromCity, toCity, todayStr)
+                .filter { it.status == 1 }
+
+            val fromAirportName = listOfNotNull(
+                off?.fromAirport?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
+                fromAp?.airportName?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
+                off?.fromAirport?.takeIf { it.isNotBlank() },
+                fromAp?.airportName?.takeIf { it.isNotBlank() }
+            ).firstOrNull() ?: "${fromCity}机场"
+            val toAirportName = listOfNotNull(
+                off?.toAirport?.takeIf { it.isNotBlank() && it != "${toCity}机场" },
+                toAp?.airportName?.takeIf { it.isNotBlank() && it != "${toCity}机场" },
+                off?.toAirport?.takeIf { it.isNotBlank() },
+                toAp?.airportName?.takeIf { it.isNotBlank() }
+            ).firstOrNull() ?: "${toCity}机场"
+
+            NetworkRouteSummary(
+                fromCity = fromCity,
+                fromAirport = fromAirportName,
+                fromIata = off?.fromIata?.ifBlank { CityIataMapper.toApiIata(fromCity) } ?: CityIataMapper.toApiIata(fromCity),
+                toCity = toCity,
+                toAirport = toAirportName,
+                toIata = off?.toIata?.ifBlank { CityIataMapper.toApiIata(toCity) } ?: CityIataMapper.toApiIata(toCity),
+                flights = flights,
+                isOfficialSynced = off != null,
+                availableDaysCount = cals.size,
+                nearestAvailableDate = cals.firstOrNull()?.flightDate,
+                officialUpdatedAt = off?.updatedAt
+            )
+        }
+
     suspend fun getRouteCalendarMap(fromCity: String, toCity: String): Map<String, Int> =
         withContext(Dispatchers.IO) {
-            val todayStr = LocalDate.now().toString()
+            val todayStr = ChinaClock.today().toString()
             db.calendarCacheDao().getAllForRoute(fromCity, toCity, todayStr)
                 .associate { it.flightDate to it.status }
         }
 
     suspend fun getRouteSeatSnapshotsByDate(fromCity: String, toCity: String): Map<String, List<SeatSnapshotEntity>> =
         withContext(Dispatchers.IO) {
-            val todayStr = LocalDate.now().toString()
+            val todayStr = ChinaClock.today().toString()
             db.seatSnapshotDao().getAllForRoute(fromCity, toCity, todayStr)
                 .groupBy { it.flightDate }
         }

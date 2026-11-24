@@ -2,7 +2,13 @@ package com.loongair.tripplanner.data.remote
 
 import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.local.FlightRouteEntity
+import com.loongair.tripplanner.util.ChinaClock
+import com.loongair.tripplanner.util.suspendRunCatching
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.withLock
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import kotlinx.serialization.json.JsonArray
@@ -25,9 +31,7 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
-import java.time.LocalDate
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
+import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
 import kotlin.math.abs
 
@@ -36,7 +40,8 @@ import kotlin.math.abs
  * 直连 https://www.loongair.cn/webhandler.ashx，纯本地端到端通信，无第三方中转。
  */
 class LoongAirApi(
-    private val authPrefs: AuthPrefs
+    private val authPrefs: AuthPrefs,
+    private val rateLimiter: ApiRateLimiter = ApiRateLimiter()
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
@@ -44,9 +49,11 @@ class LoongAirApi(
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(12, TimeUnit.SECONDS)
+        .callTimeout(25, TimeUnit.SECONDS)
         .build()
 
-    private val pendingVerifyIds = mutableMapOf<String, String>()
+    private val pendingVerifyIds = ConcurrentHashMap<String, String>()
+    private val refreshMutex = Mutex()
 
     private data class GatewayResponse(
         val httpCode: Int,
@@ -58,8 +65,7 @@ class LoongAirApi(
 
     private fun buildDeviceInfo(): String = "iPhone<iPhone16,2>,ios18.2"
 
-    private fun nowFormatted(): String =
-        LocalDateTime.now().format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss"))
+    private fun nowFormatted(): String = ChinaClock.nowFormatted()
 
     private fun parseResultField(raw: JsonElement?): JsonElement? {
         if (raw == null || raw is JsonNull) return null
@@ -80,51 +86,77 @@ class LoongAirApi(
         params: JsonObject,
         sessionToken: String = ""
     ): GatewayResponse = withContext(Dispatchers.IO) {
-        val cleanToken = sessionToken.removePrefix("SESSION=").trim()
-        val payload = buildJsonObject {
-            put("AppID", "ClientService")
-            put("MethodName", method)
-            put("Parameters", params.toString())
-        }
-        val encoded = URLEncoder.encode(payload.toString(), "UTF-8")
-        val body = "paras=$encoded"
-            .toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaType())
-
-        val reqBuilder = Request.Builder()
-            .url(GATEWAY_URL)
-            .header("Host", "www.loongair.cn")
-            .header("Accept", "*/*")
-            .header("AppVersion", "5.1.1")
-            .header("SubVersion", "1.0.239")
-            .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
-            .header("User-Agent", APP_USER_AGENT)
-            .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
-            .post(body)
-
-        if (cleanToken.isNotEmpty()) {
-            reqBuilder.header("Cookie", "SESSION=$cleanToken")
-            reqBuilder.header("Authorization", cleanToken)
-        }
-
-        httpClient.newCall(reqBuilder.build()).execute().use { resp ->
-            val setCookies = resp.headers("Set-Cookie")
-            val cookieSess = setCookies.firstNotNullOfOrNull { line ->
-                Regex("SESSION=([^;]+)").find(line)?.groupValues?.getOrNull(1)
+        val isAuthOrVerify = method.contains("VerifyCode") ||
+            method.contains("Login") ||
+            method.contains("refreshToken")
+        var attempt = 0
+        while (true) {
+            rateLimiter.acquirePermit(isAuthOrVerify = isAuthOrVerify)
+            val cleanToken = sessionToken.removePrefix("SESSION=").trim()
+            val payload = buildJsonObject {
+                put("AppID", "ClientService")
+                put("MethodName", method)
+                put("Parameters", params.toString())
             }
-            val respText = resp.body?.string().orEmpty()
-            if (resp.code == 403) {
-                return@use GatewayResponse(403, 403, "登录会话已失效 (403)", null, cookieSess)
+            val encoded = URLEncoder.encode(payload.toString(), "UTF-8")
+            val body = "paras=$encoded"
+                .toRequestBody("application/x-www-form-urlencoded; charset=UTF-8".toMediaType())
+
+            val reqBuilder = Request.Builder()
+                .url(GATEWAY_URL)
+                .header("Host", "www.loongair.cn")
+                .header("Accept", "*/*")
+                .header("AppVersion", "5.1.1")
+                .header("SubVersion", "1.0.239")
+                .header("Accept-Language", "zh-CN,zh-Hans;q=0.9")
+                .header("User-Agent", APP_USER_AGENT)
+                .header("Content-Type", "application/x-www-form-urlencoded; charset=UTF-8")
+                .post(body)
+
+            if (cleanToken.isNotEmpty()) {
+                reqBuilder.header("Cookie", "SESSION=$cleanToken")
+                reqBuilder.header("Authorization", cleanToken)
             }
-            if (!resp.isSuccessful || respText.isBlank()) {
-                return@use GatewayResponse(resp.code, -1, "网络请求异常 (HTTP ${resp.code})", null, cookieSess)
+
+            val parsed = httpClient.newCall(reqBuilder.build()).execute().use { resp ->
+                val setCookies = resp.headers("Set-Cookie")
+                val cookieSess = setCookies.firstNotNullOfOrNull { line ->
+                    Regex("SESSION=([^;]+)").find(line)?.groupValues?.getOrNull(1)
+                }
+                val respText = resp.body?.string().orEmpty()
+                if (resp.code == 403) {
+                    return@use GatewayResponse(403, 403, "登录会话已失效 (403)", null, cookieSess)
+                }
+                if (!resp.isSuccessful || respText.isBlank()) {
+                    return@use GatewayResponse(resp.code, -1, "网络请求异常 (HTTP ${resp.code})", null, cookieSess)
+                }
+                val root = runCatching { json.parseToJsonElement(respText).jsonObject }.getOrNull()
+                    ?: return@use GatewayResponse(resp.code, -1, "接口返回非 JSON 数据", null, cookieSess)
+                val errCode = root["ErrorCode"]?.jsonPrimitive?.intOrNull ?: -1
+                val msg = root["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val resultElem = parseResultField(root["Result"])
+                GatewayResponse(resp.code, errCode, msg, resultElem, cookieSess)
             }
-            val root = runCatching { json.parseToJsonElement(respText).jsonObject }.getOrNull()
-                ?: return@use GatewayResponse(resp.code, -1, "接口返回非 JSON 数据", null, cookieSess)
-            val errCode = root["ErrorCode"]?.jsonPrimitive?.intOrNull ?: -1
-            val msg = root["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
-            val resultElem = parseResultField(root["Result"])
-            GatewayResponse(resp.code, errCode, msg, resultElem, cookieSess)
+
+            if (!isAuthOrVerify && ApiRateLimiter.isThrottleSignal(parsed.httpCode, parsed.errorCode, parsed.message)) {
+                val backoffMs = rateLimiter.recordThrottleAndComputeBackoffMs()
+                if (attempt == 0) {
+                    attempt++
+                    delay(backoffMs)
+                    continue
+                }
+                throw ApiRateLimitException(
+                    parsed.message.ifBlank { "请求过于频繁触发长龙风控保护，已自动暂停，请稍后再试" }
+                )
+            }
+
+            if (parsed.errorCode == 0) {
+                rateLimiter.onSuccess()
+            }
+            return@withContext parsed
         }
+        @Suppress("UNREACHABLE_CODE")
+        error("Unreachable")
     }
 
     private suspend fun callAuthenticated(
@@ -134,21 +166,22 @@ class LoongAirApi(
     ): JsonElement {
         val session = authPrefs.current()
         if (!session.isLoggedIn || session.sessionToken.isBlank()) {
-            throw IllegalStateException("请先在「账号」页面登录长龙会员后再查询实时余票")
+            throw SessionExpiredException("请先在「我的」页面登录长龙会员后再查询实时余票")
         }
-        val resp = callGateway(method, params, session.sessionToken)
+        val usedToken = session.sessionToken
+        val resp = callGateway(method, params, usedToken)
         if ((resp.httpCode == 403 || resp.errorCode == 100001) && allowRetryRefresh) {
-            if (tryRefreshSession()) {
+            if (tryRefreshSession(failedToken = usedToken)) {
                 return callAuthenticated(method, params, allowRetryRefresh = false)
             }
-            throw IllegalStateException("长龙会员会话已过期，请在「账号」页重新验证码登录")
+            throw SessionExpiredException("长龙会员会话已过期，请在「我的」页重新验证码登录")
         }
         if (resp.errorCode != 0) {
             val baseMsg = resp.message.ifBlank { "长龙接口返回错误 (${resp.errorCode})" }
             if (baseMsg.contains("次卡") || baseMsg.contains("此卡") || baseMsg.contains("scgTid", ignoreCase = true)) {
                 val tid = session.secCardGrantTid.ifBlank { "空" }
                 throw IllegalStateException(
-                    "$baseMsg（当前卡ID: $tid，请到「账号与设置」点击「重新同步卡包」切换你的畅飞卡或查看卡包诊断）"
+                    "$baseMsg（当前卡ID: $tid，请到「我的」点击「重新同步卡包」切换你的畅飞卡或查看卡包诊断）"
                 )
             }
             throw IllegalStateException(baseMsg)
@@ -195,6 +228,8 @@ class LoongAirApi(
             } else {
                 SmsSendResult(false, message = "${resp.message.ifBlank { "发送失败" }} (${resp.errorCode})")
             }
+        } catch (c: CancellationException) {
+            throw c
         } catch (e: Exception) {
             SmsSendResult(false, message = "请求失败：${e.message}")
         }
@@ -247,6 +282,8 @@ class LoongAirApi(
                 fallbackEncUid = encUidFromLogin,
                 manualScgTid = ""
             )
+        } catch (c: CancellationException) {
+            throw c
         } catch (e: Exception) {
             LoginResult(false, message = "登录异常：${e.message}")
         }
@@ -265,6 +302,8 @@ class LoongAirApi(
                 fallbackEncUid = authPrefs.current().encryptedUserId,
                 manualScgTid = manualScgTid.trim()
             )
+        } catch (c: CancellationException) {
+            throw c
         } catch (e: Exception) {
             LoginResult(false, message = "校验凭证失败：${e.message}")
         }
@@ -280,7 +319,7 @@ class LoongAirApi(
         }
         var token = session.sessionToken
         var probe = discoverUnionCards(token)
-        if (probe.authExpired && tryRefreshSession()) {
+        if (probe.authExpired && tryRefreshSession(failedToken = token)) {
             token = authPrefs.current().sessionToken
             probe = discoverUnionCards(token)
         }
@@ -359,7 +398,7 @@ class LoongAirApi(
             // 如果前两次查询已经找到真实次卡 (scgTid)，跳过后续探测减少请求
             if (idx >= 2 && foundMap.values.any { it.isSecCard }) break
 
-            val resp = runCatching { callGateway("cardToC_getUnionCardList", params, sessionToken) }.getOrNull()
+            val resp = suspendRunCatching { callGateway("cardToC_getUnionCardList", params, sessionToken) }.getOrNull()
             if (resp == null) {
                 diagLines.add("[$label] 请求异常")
                 continue
@@ -409,7 +448,7 @@ class LoongAirApi(
                 put("language", "zh-cn")
             }
             for (method in secFallbackMethods) {
-                val resp = runCatching { callGateway(method, simpleParams, sessionToken) }.getOrNull() ?: continue
+                val resp = suspendRunCatching { callGateway(method, simpleParams, sessionToken) }.getOrNull() ?: continue
                 if (resp.errorCode == 0 && resp.resultElement != null) {
                     val nestedDesc = mutableListOf<String>()
                     extractCardsRecursively(resp.resultElement, method, foundMap, nestedDesc) {
@@ -638,9 +677,13 @@ class LoongAirApi(
         )
     }
 
-    suspend fun tryRefreshSession(): Boolean {
+    suspend fun tryRefreshSession(failedToken: String? = null): Boolean = refreshMutex.withLock {
         val s = authPrefs.current()
-        if (s.refreshToken.isBlank()) return false
+        // 并发请求同时遇到 403 时，若其他协程已刷新成功则直接复用新 Token，防止 refreshToken 二次轮换失效
+        if (!failedToken.isNullOrBlank() && s.isLoggedIn && s.sessionToken.isNotBlank() && s.sessionToken != failedToken) {
+            return@withLock true
+        }
+        if (s.refreshToken.isBlank()) return@withLock false
         val params = buildJsonObject {
             put("refreshToken", s.refreshToken)
             put("token", s.sessionToken)
@@ -661,7 +704,7 @@ class LoongAirApi(
             "/user/client/channel/refreshToken"
         )
         for (m in methods) {
-            val resp = runCatching { callGateway(m, params, s.sessionToken) }.getOrNull() ?: continue
+            val resp = suspendRunCatching { callGateway(m, params, s.sessionToken) }.getOrNull() ?: continue
             if (resp.errorCode == 0) {
                 val obj = resp.resultElement as? JsonObject
                 val newToken = obj?.get("Base64SessionID")?.primitiveStringOrNull()
@@ -672,23 +715,23 @@ class LoongAirApi(
                 val newRt = obj?.get("refreshToken")?.primitiveStringOrNull() ?: s.refreshToken
                 if (newToken.isNotBlank()) {
                     authPrefs.updateTokens(newToken, newRt, nowFormatted())
-                    return true
+                    return@withLock true
                 }
             }
         }
-        return false
+        false
     }
 
     private fun requireSecCardGrantTid(): String {
         val tid = authPrefs.current().secCardGrantTid.trim()
         if (tid.isBlank()) {
-            throw IllegalStateException("未获取到畅飞卡授权 ID (scgTid)，请到「账号与设置」点击「重新同步卡包」并选择你的畅飞卡")
+            throw IllegalStateException("未获取到畅飞卡授权 ID (scgTid)，请到「我的」点击「重新同步卡包」并选择你的畅飞卡")
         }
         return tid
     }
 
     /**
-     * 拉取航线未来 60 天放票日历
+     * 拉取航线未来 60 天放票日历（以北京时间 Asia/Shanghai 为基准）
      * 返回 Map<YYYY-MM-DD, status> (1=可兑, 0=已兑完, -1=未开放, -2=不适用, -3=已截止, -4=无航班)
      */
     suspend fun getCalendar(fromCity: String, toCity: String): Map<String, Int> {
@@ -704,7 +747,7 @@ class LoongAirApi(
         val resObj = callAuthenticated("getSecCardRedeemedCalendar", params) as? JsonObject
             ?: return emptyMap()
         val rawMap = resObj["calenderMap"] as? JsonObject ?: return emptyMap()
-        val today = LocalDate.now()
+        val today = ChinaClock.today()
         val maxDate = today.plusDays(60)
         val todayStr = today.toString()
         val maxDateStr = maxDate.toString()
@@ -864,7 +907,7 @@ class LoongAirApi(
             add("GetAirportInfosByGroup" to baseParams)
         }
         for ((method, params) in methods) {
-            val res = runCatching {
+            val res = suspendRunCatching {
                 if (authPrefs.current().isLoggedIn) {
                     callAuthenticated(method, params)
                 } else {
@@ -1026,79 +1069,7 @@ class LoongAirApi(
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 " +
                 "Provider/finogeeks (iPhone; miniprogram; FinChat; runtimeSdkVersion/2.51.11)"
 
-        private val VALID_FLIGHT_NO_REGEX = Regex("^[A-Z0-9]{2}\\d{3,4}[A-Z]?$")
-
-        /**
-         * 解码长龙官方网关返回的混淆航班号（如 "168&248&250&306&344&425" -> "GJ8859"）：
-         * 1. 若已是标准明文航班号（GJ8859），直接返回；
-         * 2. 长龙前端官方算法 dp(e, t)：charCode[r] = (e[r] - 7 - t) / (2 + r)，优先用 floatPrice 解码；
-         * 3. 若接口未返回 floatPrice 或修复历史缓存，自动按长龙 GJ 前缀及通用航司前缀精确反解 t；
-         * 4. 兜底尝试 didi(e) 算法：(e[r] - 7) / 2；绝不返回带 "&" 的乱码串。
-         */
-        fun decodeFlightNo(raw: String, floatPrice: Int? = null): String? {
-            val clean = raw.trim().uppercase()
-            if (clean.isEmpty()) return null
-            if (VALID_FLIGHT_NO_REGEX.matches(clean)) return clean
-            if (!clean.contains("&")) return null
-
-            val nums = clean.split("&").map { it.trim().toIntOrNull() ?: return null }
-            if (nums.size !in 4..8) return null
-
-            fun tryDp(t: Int): String? {
-                val sb = StringBuilder(nums.size)
-                for (r in nums.indices) {
-                    val numerator = nums[r] - 7 - t
-                    val denom = 2 + r
-                    if (numerator <= 0 || numerator % denom != 0) return null
-                    val code = numerator / denom
-                    if (code !in 48..90) return null
-                    sb.append(code.toChar())
-                }
-                val candidate = sb.toString().uppercase()
-                return candidate.takeIf { VALID_FLIGHT_NO_REGEX.matches(it) }
-            }
-
-            // 1. 优先使用响应提供的 floatPrice 偏移量
-            if (floatPrice != null) {
-                tryDp(floatPrice)?.let { return it }
-            }
-
-            // 2. 长龙主航司 GJ 前缀 ('G'=71, 'J'=74) 零误差反解 t
-            val gjT = nums[0] - 7 - 2 * 'G'.code
-            if (nums.size >= 2 && (nums[1] - 7 - gjT) == 3 * 'J'.code) {
-                tryDp(gjT)?.let { return it }
-            }
-
-            // 3. 兼容共享代码/其他航司两字码，遍历可能偏移量 t（毫秒级）
-            val minT = nums[0] - 7 - 2 * 'Z'.code
-            val maxT = nums[0] - 7 - 2 * '0'.code
-            for (t in minT..maxT) {
-                if (t == gjT || t == floatPrice) continue
-                tryDp(t)?.let { return it }
-            }
-
-            // 4. 静态 didi(e) 算法兜底：(e[r] - 7) / 2
-            val didiSb = StringBuilder(nums.size)
-            var didiOk = true
-            for (v in nums) {
-                val n = v - 7
-                if (n <= 0 || n % 2 != 0) {
-                    didiOk = false
-                    break
-                }
-                val code = n / 2
-                if (code !in 48..90) {
-                    didiOk = false
-                    break
-                }
-                didiSb.append(code.toChar())
-            }
-            if (didiOk) {
-                val cand = didiSb.toString().uppercase()
-                if (VALID_FLIGHT_NO_REGEX.matches(cand)) return cand
-            }
-
-            return null
-        }
+        fun decodeFlightNo(raw: String, floatPrice: Int? = null): String? =
+            FlightNoDecoder.decode(raw, floatPrice)
     }
 }

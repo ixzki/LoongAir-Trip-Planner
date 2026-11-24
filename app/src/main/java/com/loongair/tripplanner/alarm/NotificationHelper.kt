@@ -22,19 +22,17 @@ object NotificationHelper {
     const val EXTRA_MESSAGE = "extra_message"
 
     fun ensureChannel(context: Context) {
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            val channel = NotificationChannel(
-                CHANNEL_ID,
-                "畅飞卡抢票提醒",
-                NotificationManager.IMPORTANCE_HIGH
-            ).apply {
-                description = "长龙航空畅飞卡行程放票开抢与兑换截止精确提醒"
-                enableVibration(true)
-                vibrationPattern = longArrayOf(0, 400, 200, 400)
-            }
-            val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-            nm.createNotificationChannel(channel)
+        val channel = NotificationChannel(
+            CHANNEL_ID,
+            "畅飞卡抢票提醒",
+            NotificationManager.IMPORTANCE_HIGH
+        ).apply {
+            description = "长龙航空畅飞卡行程放票开抢与兑换截止精确提醒"
+            enableVibration(true)
+            vibrationPattern = longArrayOf(0, 400, 200, 400)
         }
+        val nm = context.getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
+        nm.createNotificationChannel(channel)
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
@@ -56,7 +54,14 @@ object NotificationHelper {
         message: String
     ) {
         ensureChannel(context)
-        if (!hasNotificationPermission(context)) return
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
+            ContextCompat.checkSelfPermission(
+                context,
+                Manifest.permission.POST_NOTIFICATIONS
+            ) != PackageManager.PERMISSION_GRANTED
+        ) {
+            return
+        }
 
         val openIntent = Intent(context, MainActivity::class.java).apply {
             flags = Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TOP or Intent.FLAG_ACTIVITY_SINGLE_TOP

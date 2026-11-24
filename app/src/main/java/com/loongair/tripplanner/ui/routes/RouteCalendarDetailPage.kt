@@ -64,6 +64,7 @@ import com.loongair.tripplanner.ui.theme.LocalLoongPalette
 import com.loongair.tripplanner.ui.theme.LoongType
 import com.loongair.tripplanner.ui.theme.bounceOnTouch
 import com.loongair.tripplanner.ui.theme.pressScale
+import com.loongair.tripplanner.util.rememberChinaToday
 import java.time.LocalDate
 import java.time.YearMonth
 
@@ -90,7 +91,7 @@ fun RouteCalendarDetailPage(
         }
     }
 
-    val today = remember { LocalDate.now() }
+    val today = rememberChinaToday()
     val fortyDays = remember(today) { (0L until 40L).map { today.plusDays(it) } }
     val groupedByMonth = remember(fortyDays) { fortyDays.groupBy { YearMonth.from(it) } }
     val visibleDateKeys = remember(fortyDays) { fortyDays.map { it.toString() }.toSet() }

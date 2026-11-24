@@ -1,3 +1,5 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.kotlin.android)
@@ -5,6 +7,14 @@ plugins {
     alias(libs.plugins.kotlin.serialization)
     alias(libs.plugins.ksp)
 }
+
+val localProps = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}
+
+fun propOrEnv(key: String): String? =
+    (localProps.getProperty(key) ?: System.getenv(key))?.takeIf { it.isNotBlank() }
 
 android {
     namespace = "com.loongair.tripplanner"
@@ -14,15 +24,30 @@ android {
         applicationId = "com.loongair.tripplanner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 13
-        versionName = "1.6.2"
+        versionCode = 14
+        versionName = "1.7.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    signingConfigs {
+        val ksPath = propOrEnv("LOONGAIR_KEYSTORE_PATH")
+        if (ksPath != null && file(ksPath).exists()) {
+            create("release") {
+                storeFile = file(ksPath)
+                storePassword = propOrEnv("LOONGAIR_KEYSTORE_PASSWORD")
+                keyAlias = propOrEnv("LOONGAIR_KEY_ALIAS")
+                keyPassword = propOrEnv("LOONGAIR_KEY_PASSWORD")
+            }
+        }
+    }
+
     buildTypes {
         release {
-            isMinifyEnabled = false
+            isMinifyEnabled = true
+            isShrinkResources = true
+            signingConfig = signingConfigs.findByName("release")
+                ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -41,6 +66,13 @@ android {
 
     buildFeatures {
         compose = true
+        buildConfig = true
+    }
+
+    lint {
+        abortOnError = true
+        checkReleaseBuilds = true
+        disable += setOf("GradleDependency", "AndroidGradlePluginVersion")
     }
 
     packaging {
@@ -48,6 +80,16 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+ksp {
+    arg("room.schemaLocation", "$projectDir/schemas")
+    arg("room.incremental", "true")
+}
+
+// 防止同时构建 Debug + Release 时两个 KSP 任务并发读写同一个 Room Schema 文件
+tasks.matching { it.name == "kspReleaseKotlin" }.configureEach {
+    mustRunAfter(tasks.matching { t -> t.name == "kspDebugKotlin" })
 }
 
 dependencies {
@@ -74,4 +116,5 @@ dependencies {
 
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
+    testImplementation(libs.kotlinx.coroutines.test)
 }

@@ -27,6 +27,7 @@ import androidx.compose.ui.graphics.graphicsLayer
 import androidx.compose.ui.hapticfeedback.HapticFeedbackType
 import androidx.compose.ui.input.pointer.pointerInput
 import androidx.compose.ui.platform.LocalHapticFeedback
+import androidx.compose.ui.semantics.Role
 import androidx.compose.ui.unit.Dp
 import androidx.compose.ui.unit.IntOffset
 import androidx.compose.ui.unit.dp
@@ -145,6 +146,7 @@ fun Modifier.pressScale(
     scaleDown: Float = AppPressScale.CONTROL,
     enabled: Boolean = true,
     haptic: Boolean = false,
+    role: Role? = Role.Button,
     pressedColor: Color? = null,
     pressedShape: Shape = RoundedCornerShape(AppRadii.sm),
     springSpec: SpringSpec<Float> = AppMotion.tap(),
@@ -182,7 +184,8 @@ fun Modifier.pressScale(
         .clickable(
             enabled = enabled,
             interactionSource = interactionSource,
-            indication = null
+            indication = null,
+            role = role
         ) {
             if (haptic) {
                 hapticFeedback.performHapticFeedback(HapticFeedbackType.TextHandleMove)
@@ -199,6 +202,7 @@ fun Modifier.pressHighlight(
     cornerRadius: Dp = AppRadii.md,
     pressedColor: Color? = null,
     enabled: Boolean = true,
+    role: Role? = Role.Button,
     onClick: () -> Unit
 ): Modifier = composed {
     val palette = LocalLoongPalette.current
@@ -219,6 +223,7 @@ fun Modifier.pressHighlight(
             enabled = enabled,
             interactionSource = interactionSource,
             indication = null,
+            role = role,
             onClick = onClick
         )
 }

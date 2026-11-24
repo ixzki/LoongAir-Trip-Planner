@@ -1,6 +1,7 @@
 package com.loongair.tripplanner.data.local
 
 import android.content.Context
+import android.content.SharedPreferences
 import com.loongair.tripplanner.data.remote.DetectedCardInfo
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.StateFlow
@@ -29,18 +30,60 @@ data class UserSessionState(
         get() = if (mobile.length == 11) "${mobile.take(3)}****${mobile.takeLast(4)}" else mobile
 }
 
-class AuthPrefs(context: Context) {
-    private val prefs = context.applicationContext.getSharedPreferences("loongair_auth_prefs", Context.MODE_PRIVATE)
+class AuthPrefs(
+    private val prefs: SharedPreferences,
+    private val cipher: StringCipher = AndroidKeyStoreCipher()
+) {
+    constructor(context: Context) : this(
+        prefs = context.applicationContext.getSharedPreferences(PREFS_FILE_NAME, Context.MODE_PRIVATE),
+        cipher = AndroidKeyStoreCipher()
+    )
+
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    init {
+        migrateLegacyPlaintextIfNeeded()
+    }
 
     private val _state = MutableStateFlow(readState())
     val state: StateFlow<UserSessionState> = _state.asStateFlow()
 
     fun current(): UserSessionState = _state.value
 
+    private fun getSecret(key: String): String {
+        val raw = prefs.getString(key, "").orEmpty()
+        return if (raw.isEmpty()) "" else cipher.decrypt(raw)
+    }
+
+    private fun SharedPreferences.Editor.putSecret(key: String, value: String): SharedPreferences.Editor {
+        val enc = if (value.isEmpty()) "" else cipher.encrypt(value)
+        return putString(key, enc)
+    }
+
+    /**
+     * 平滑升级迁移：发现旧版本未加密的敏感字段时，自动使用 Keystore 重加密覆盖，不丢失现有会话。
+     */
+    private fun migrateLegacyPlaintextIfNeeded() {
+        val editor = prefs.edit()
+        var migrated = false
+        for (key in SENSITIVE_KEYS) {
+            val raw = prefs.getString(key, "").orEmpty()
+            if (raw.isNotEmpty() && !cipher.isEncrypted(raw)) {
+                val enc = cipher.encrypt(raw)
+                if (enc.isNotEmpty()) {
+                    editor.putString(key, enc)
+                    migrated = true
+                }
+            }
+        }
+        if (migrated) {
+            editor.apply()
+        }
+    }
+
     private fun readState(): UserSessionState {
-        val token = prefs.getString(KEY_TOKEN, "").orEmpty()
-        val cardsJson = prefs.getString(KEY_CARDS_JSON, "").orEmpty()
+        val token = getSecret(KEY_TOKEN)
+        val cardsJson = getSecret(KEY_CARDS_JSON)
         val cards = if (cardsJson.isNotBlank()) {
             runCatching { json.decodeFromString<List<DetectedCardInfo>>(cardsJson) }.getOrDefault(emptyList())
         } else {
@@ -49,14 +92,14 @@ class AuthPrefs(context: Context) {
         return UserSessionState(
             isLoggedIn = token.length > 8,
             userName = prefs.getString(KEY_USER_NAME, "未登录").orEmpty(),
-            mobile = prefs.getString(KEY_MOBILE, "").orEmpty(),
+            mobile = getSecret(KEY_MOBILE),
             memberLevel = prefs.getString(KEY_MEMBER_LEVEL, "乘云会员").orEmpty(),
             cardName = prefs.getString(KEY_CARD_NAME, "长龙畅飞卡").orEmpty(),
             sessionToken = token,
-            refreshToken = prefs.getString(KEY_REFRESH_TOKEN, "").orEmpty(),
-            secCardGrantTid = prefs.getString(KEY_SCG_TID, "").orEmpty(),
-            encryptedUserId = prefs.getString(KEY_ENC_UID, "").orEmpty(),
-            certNumber = prefs.getString(KEY_CERT_NO, "").orEmpty(),
+            refreshToken = getSecret(KEY_REFRESH_TOKEN),
+            secCardGrantTid = getSecret(KEY_SCG_TID),
+            encryptedUserId = getSecret(KEY_ENC_UID),
+            certNumber = getSecret(KEY_CERT_NO),
             updatedAt = prefs.getString(KEY_UPDATED_AT, "").orEmpty(),
             homeCity = prefs.getString(KEY_HOME_CITY, "").orEmpty(),
             themeStyle = prefs.getString(KEY_THEME_STYLE, "crimson").orEmpty().ifBlank { "crimson" },
@@ -65,6 +108,7 @@ class AuthPrefs(context: Context) {
         )
     }
 
+    @Synchronized
     fun saveSession(
         token: String,
         refreshToken: String,
@@ -81,22 +125,23 @@ class AuthPrefs(context: Context) {
     ) {
         val cleanToken = token.removePrefix("SESSION=").trim()
         prefs.edit()
-            .putString(KEY_TOKEN, cleanToken)
-            .putString(KEY_REFRESH_TOKEN, refreshToken)
+            .putSecret(KEY_TOKEN, cleanToken)
+            .putSecret(KEY_REFRESH_TOKEN, refreshToken)
             .putString(KEY_USER_NAME, userName.ifBlank { "长龙会员" })
-            .putString(KEY_MOBILE, mobile)
+            .putSecret(KEY_MOBILE, mobile)
             .putString(KEY_MEMBER_LEVEL, memberLevel.ifBlank { "乘云会员" })
             .putString(KEY_CARD_NAME, cardName.ifBlank { "长龙畅飞卡" })
-            .putString(KEY_SCG_TID, secCardGrantTid)
-            .putString(KEY_ENC_UID, encryptedUserId)
-            .putString(KEY_CERT_NO, certNumber)
+            .putSecret(KEY_SCG_TID, secCardGrantTid)
+            .putSecret(KEY_ENC_UID, encryptedUserId)
+            .putSecret(KEY_CERT_NO, certNumber)
             .putString(KEY_UPDATED_AT, updatedAt)
-            .putString(KEY_CARDS_JSON, json.encodeToString(detectedCards))
+            .putSecret(KEY_CARDS_JSON, json.encodeToString(detectedCards))
             .putString(KEY_CARD_DIAG, cardDiagnostic)
             .apply()
         _state.value = readState()
     }
 
+    @Synchronized
     fun updateCards(
         cards: List<DetectedCardInfo>,
         selectedTid: String,
@@ -105,8 +150,8 @@ class AuthPrefs(context: Context) {
         updatedAt: String
     ) {
         prefs.edit()
-            .putString(KEY_CARDS_JSON, json.encodeToString(cards))
-            .putString(KEY_SCG_TID, selectedTid)
+            .putSecret(KEY_CARDS_JSON, json.encodeToString(cards))
+            .putSecret(KEY_SCG_TID, selectedTid)
             .putString(KEY_CARD_NAME, selectedName.ifBlank { current().cardName })
             .putString(KEY_CARD_DIAG, diagnostic)
             .putString(KEY_UPDATED_AT, updatedAt)
@@ -114,34 +159,39 @@ class AuthPrefs(context: Context) {
         _state.value = readState()
     }
 
+    @Synchronized
     fun selectActiveCard(grantTid: String, cardName: String) {
         prefs.edit()
-            .putString(KEY_SCG_TID, grantTid.trim())
+            .putSecret(KEY_SCG_TID, grantTid.trim())
             .putString(KEY_CARD_NAME, cardName.ifBlank { "长龙畅飞卡" })
             .apply()
         _state.value = readState()
     }
 
+    @Synchronized
     fun updateTokens(newToken: String, newRefreshToken: String, updatedAt: String) {
         val cleanToken = newToken.removePrefix("SESSION=").trim()
         prefs.edit()
-            .putString(KEY_TOKEN, cleanToken)
-            .putString(KEY_REFRESH_TOKEN, newRefreshToken)
+            .putSecret(KEY_TOKEN, cleanToken)
+            .putSecret(KEY_REFRESH_TOKEN, newRefreshToken)
             .putString(KEY_UPDATED_AT, updatedAt)
             .apply()
         _state.value = readState()
     }
 
+    @Synchronized
     fun setHomeCity(city: String) {
         prefs.edit().putString(KEY_HOME_CITY, city.trim()).apply()
         _state.value = readState()
     }
 
+    @Synchronized
     fun setThemeStyle(styleKey: String) {
         prefs.edit().putString(KEY_THEME_STYLE, styleKey).apply()
         _state.value = readState()
     }
 
+    @Synchronized
     fun clearSession() {
         val keepHomeCity = current().homeCity
         val keepTheme = current().themeStyle
@@ -153,6 +203,7 @@ class AuthPrefs(context: Context) {
     }
 
     companion object {
+        const val PREFS_FILE_NAME = "loongair_auth_prefs"
         private const val KEY_TOKEN = "session_token"
         private const val KEY_REFRESH_TOKEN = "refresh_token"
         private const val KEY_USER_NAME = "user_name"
@@ -167,5 +218,15 @@ class AuthPrefs(context: Context) {
         private const val KEY_THEME_STYLE = "theme_style"
         private const val KEY_CARDS_JSON = "detected_cards_json"
         private const val KEY_CARD_DIAG = "card_diagnostic"
+
+        private val SENSITIVE_KEYS = listOf(
+            KEY_TOKEN,
+            KEY_REFRESH_TOKEN,
+            KEY_MOBILE,
+            KEY_SCG_TID,
+            KEY_ENC_UID,
+            KEY_CERT_NO,
+            KEY_CARDS_JSON
+        )
     }
 }

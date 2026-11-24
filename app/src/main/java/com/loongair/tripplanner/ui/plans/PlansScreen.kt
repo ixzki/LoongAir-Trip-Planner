@@ -60,11 +60,15 @@ import androidx.compose.material3.TimePicker
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
+import androidx.lifecycle.Lifecycle
+import androidx.lifecycle.LifecycleEventObserver
+import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -98,6 +102,7 @@ import com.loongair.tripplanner.ui.theme.LoongType
 import com.loongair.tripplanner.ui.theme.bounceOnTouch
 import com.loongair.tripplanner.ui.theme.pressHighlight
 import com.loongair.tripplanner.ui.theme.pressScale
+import com.loongair.tripplanner.util.ChinaClock
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
@@ -112,14 +117,14 @@ fun PlansScreen(
 ) {
     val p = LocalLoongPalette.current
     val context = LocalContext.current
-    val plans by viewModel.plans.collectAsState()
-    val reminders by viewModel.reminders.collectAsState()
-    val recheckingId by viewModel.recheckingPlanId.collectAsState()
-    val highlightedPlanId by viewModel.highlightedPlanId.collectAsState()
-    val networkState by viewModel.networkState.collectAsState()
-    val session by viewModel.sessionState.collectAsState()
-    val officialAirports by viewModel.officialAirports.collectAsState()
-    val departureAirportsLoading by viewModel.departureAirportsLoading.collectAsState()
+    val plans by viewModel.plans.collectAsStateWithLifecycle()
+    val reminders by viewModel.reminders.collectAsStateWithLifecycle()
+    val recheckingId by viewModel.recheckingPlanId.collectAsStateWithLifecycle()
+    val highlightedPlanId by viewModel.highlightedPlanId.collectAsStateWithLifecycle()
+    val networkState by viewModel.networkState.collectAsStateWithLifecycle()
+    val session by viewModel.sessionState.collectAsStateWithLifecycle()
+    val officialAirports by viewModel.officialAirports.collectAsStateWithLifecycle()
+    val departureAirportsLoading by viewModel.departureAirportsLoading.collectAsStateWithLifecycle()
 
     // 首次登录并同步一个城市的所有航线之前（且本地无历史行程），锁定行程提醒功能
     if (!networkState.isLoading && !networkState.hasSyncedData && plans.isEmpty()) {
@@ -146,6 +151,19 @@ fun PlansScreen(
     val collapseProgress = rememberHeaderCollapseProgress(listState)
 
     var hasNotifPerm by remember { mutableStateOf(NotificationHelper.hasNotificationPermission(context)) }
+    var canExactAlarm by remember { mutableStateOf(viewModel.scheduler.canScheduleExactAlarms()) }
+    val lifecycleOwner = LocalLifecycleOwner.current
+    DisposableEffect(lifecycleOwner) {
+        val observer = LifecycleEventObserver { _, event ->
+            if (event == Lifecycle.Event.ON_RESUME) {
+                hasNotifPerm = NotificationHelper.hasNotificationPermission(context)
+                canExactAlarm = viewModel.scheduler.canScheduleExactAlarms()
+            }
+        }
+        lifecycleOwner.lifecycle.addObserver(observer)
+        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
+    }
+
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
@@ -155,7 +173,6 @@ fun PlansScreen(
         }
     }
 
-    val canExactAlarm = viewModel.scheduler.canScheduleExactAlarms()
     var reminderTargetPlan by remember { mutableStateOf<TripPlanEntity?>(null) }
 
     val remindersByPlan = remember(reminders) { reminders.groupBy { it.planId } }
@@ -336,6 +353,7 @@ fun PlansScreen(
                         TripPlanCard(
                             plan = plan,
                             reminders = planReminders,
+                            canExactAlarm = canExactAlarm,
                             isHighlighted = highlightedPlanId == plan.id,
                             isRechecking = recheckingId == plan.id,
                             onRecheckSeats = { viewModel.recheckPlanLiveSeats(plan) },
@@ -391,6 +409,7 @@ fun PlansScreen(
 private fun TripPlanCard(
     plan: TripPlanEntity,
     reminders: List<ReminderEntity>,
+    canExactAlarm: Boolean,
     isHighlighted: Boolean,
     isRechecking: Boolean,
     onRecheckSeats: () -> Unit,
@@ -560,7 +579,7 @@ private fun TripPlanCard(
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
                     reminders.forEach { r ->
                         val triggerDt = Instant.ofEpochMilli(r.triggerAtMillis)
-                            .atZone(ZoneId.systemDefault())
+                            .atZone(ChinaClock.ZONE)
                             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
                         val isExpired = r.fired || r.triggerAtMillis <= System.currentTimeMillis()
                         Row(
@@ -583,6 +602,13 @@ private fun TripPlanCard(
                                             if (r.fired) "已触发" else "已过期",
                                             style = LoongType.caption.copy(fontWeight = FontWeight.Medium),
                                             color = p.textTertiary
+                                        )
+                                    } else if (r.enabled && !canExactAlarm) {
+                                        TonePillBadge(
+                                            text = "非精确",
+                                            backgroundColor = p.warningBg,
+                                            contentColor = p.warning,
+                                            cornerRadius = 6.dp
                                         )
                                     }
                                 }
@@ -635,7 +661,7 @@ private fun AddReminderDialog(
 ) {
     val p = LocalLoongPalette.current
     val suggestions = remember(plan.id) { RoundTripMatcher.buildReminderSuggestions(plan) }
-    var customDate by remember { mutableStateOf(LocalDate.now().plusDays(1)) }
+    var customDate by remember { mutableStateOf(ChinaClock.today().plusDays(1)) }
     var customHour by remember { mutableStateOf(9) }
     var customMinute by remember { mutableStateOf(55) }
     var customLabel by remember { mutableStateOf("自定义抢票提醒") }
@@ -729,7 +755,7 @@ private fun AddReminderDialog(
                 Button(
                     onClick = {
                         val dt = LocalDateTime.of(customDate, LocalTime.of(customHour, customMinute))
-                        val millis = dt.atZone(ZoneId.systemDefault()).toInstant().toEpochMilli()
+                        val millis = dt.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
                         val title = "⏰ 抢票提醒：${plan.fromCity} ⇄ ${plan.toCity}"
                         val msg = "去程 ${plan.outboundDate} ${plan.outboundFlightNo}(${plan.outboundDepTime}) / 返程 ${plan.returnDate} ${plan.returnFlightNo}(${plan.returnDepTime})，请及时查票兑换！"
                         onAddReminder(millis, customLabel.ifBlank { "自定义提醒" }, title, msg)
@@ -789,11 +815,12 @@ private fun AddReminderDialog(
 }
 
 private fun exportPlanToSystemCalendar(context: Context, plan: TripPlanEntity) {
-    val outDate = runCatching { LocalDate.parse(plan.outboundDate) }.getOrNull() ?: LocalDate.now()
+    val today = ChinaClock.today()
+    val outDate = runCatching { LocalDate.parse(plan.outboundDate) }.getOrNull() ?: today
     val openDate = outDate.minusDays(30)
-    val startDate = if (openDate.isAfter(LocalDate.now())) openDate else LocalDate.now().plusDays(1)
+    val startDate = if (openDate.isAfter(today)) openDate else today.plusDays(1)
     val startMillis = LocalDateTime.of(startDate, LocalTime.of(9, 55))
-        .atZone(ZoneId.systemDefault())
+        .atZone(ChinaClock.ZONE)
         .toInstant()
         .toEpochMilli()
 

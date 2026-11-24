@@ -181,6 +181,9 @@ interface OfficialRouteDao {
     @Query("SELECT * FROM official_routes WHERE fromCity = :fromCity ORDER BY toCity ASC")
     suspend fun getByOrigin(fromCity: String): List<OfficialRouteEntity>
 
+    @Query("SELECT * FROM official_routes WHERE fromCity = :fromCity AND toCity = :toCity LIMIT 1")
+    suspend fun getOne(fromCity: String, toCity: String): OfficialRouteEntity?
+
     @Query("DELETE FROM official_routes WHERE fromCity = :fromCity")
     suspend fun deleteForOrigin(fromCity: String)
 
@@ -195,6 +198,9 @@ interface OfficialRouteDao {
 interface OfficialAirportDao {
     @Query("SELECT * FROM official_airports ORDER BY cityName ASC")
     suspend fun getAll(): List<OfficialAirportEntity>
+
+    @Query("SELECT * FROM official_airports WHERE cityName = :cityName LIMIT 1")
+    suspend fun getByCity(cityName: String): OfficialAirportEntity?
 
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<OfficialAirportEntity>)
