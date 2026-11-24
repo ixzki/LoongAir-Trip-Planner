@@ -1,0 +1,930 @@
+package com.loongair.tripplanner.ui.routes
+
+import android.graphics.Paint
+import android.graphics.Typeface
+import androidx.activity.compose.BackHandler
+import androidx.compose.animation.AnimatedContent
+import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.animation.animateColorAsState
+import androidx.compose.animation.core.Animatable
+import androidx.compose.animation.core.animateFloatAsState
+import androidx.compose.animation.expandVertically
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
+import androidx.compose.animation.togetherWith
+import androidx.compose.foundation.Canvas
+import androidx.compose.foundation.background
+import androidx.compose.foundation.gestures.detectTransformGestures
+import androidx.compose.foundation.horizontalScroll
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.PaddingValues
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.aspectRatio
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.width
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.rememberScrollState
+import androidx.compose.foundation.shape.CircleShape
+import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowRight
+import androidx.compose.material.icons.filled.Add
+import androidx.compose.material.icons.filled.CenterFocusStrong
+import androidx.compose.material.icons.filled.Remove
+import androidx.compose.material.icons.filled.Search
+import androidx.compose.material.icons.filled.SwapHoriz
+import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.HorizontalDivider
+import androidx.compose.material3.Icon
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableFloatStateOf
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Alignment
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.draw.clip
+import androidx.compose.ui.draw.clipToBounds
+import androidx.compose.ui.geometry.Offset
+import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.Path
+import androidx.compose.ui.graphics.drawscope.Stroke
+import androidx.compose.ui.graphics.drawscope.withTransform
+import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.graphics.nativeCanvas
+import androidx.compose.ui.graphics.toArgb
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
+import androidx.compose.ui.text.style.TextOverflow
+import androidx.compose.ui.unit.dp
+import androidx.compose.ui.unit.sp
+import com.loongair.tripplanner.data.remote.ChinaProvincePath
+import com.loongair.tripplanner.data.remote.CityIataMapper
+import com.loongair.tripplanner.data.remote.CityMeta
+import com.loongair.tripplanner.data.remote.LoongAirApi
+import com.loongair.tripplanner.data.repository.NetworkRouteSummary
+import com.loongair.tripplanner.data.repository.RoundTripMatcher
+import com.loongair.tripplanner.ui.MainViewModel
+import com.loongair.tripplanner.ui.components.CompactScrollTopBar
+import com.loongair.tripplanner.ui.components.FirstRunOnboardingGate
+import com.loongair.tripplanner.ui.components.HeroCircleActionButton
+import com.loongair.tripplanner.ui.components.HeroHeaderOverlapContainer
+import com.loongair.tripplanner.ui.components.LacquerPullRefreshBox
+import com.loongair.tripplanner.ui.components.LiveSyncProgressBanner
+import com.loongair.tripplanner.ui.components.SectionTitleRow
+import com.loongair.tripplanner.ui.components.SoftCard
+import com.loongair.tripplanner.ui.components.TonePillBadge
+import com.loongair.tripplanner.ui.components.rememberHeaderCollapseProgress
+import com.loongair.tripplanner.ui.components.todayChineseHeaderDate
+import com.loongair.tripplanner.ui.search.CityPickerDialog
+import com.loongair.tripplanner.ui.theme.AppMotion
+import com.loongair.tripplanner.ui.theme.AppPressScale
+import com.loongair.tripplanner.ui.theme.AppRadii
+import com.loongair.tripplanner.ui.theme.AppSpace
+import com.loongair.tripplanner.ui.theme.LocalLoongPalette
+import com.loongair.tripplanner.ui.theme.LoongType
+import com.loongair.tripplanner.ui.theme.pressScale
+import kotlinx.coroutines.launch
+
+private val HUB_COLOR_PALETTE = listOf(
+    Color(0xFFC84B31),
+    Color(0xFF2B6CB0),
+    Color(0xFF7B52AB),
+    Color(0xFFB58024),
+    Color(0xFF2F855A),
+    Color(0xFFA83E6B),
+    Color(0xFF1F7A8C),
+    Color(0xFF2B7A78),
+    Color(0xFFC96A2B),
+    Color(0xFF4C51BF)
+)
+
+@Composable
+fun RoutesScreen(
+    viewModel: MainViewModel,
+    onJumpToRoundTrip: (fromCity: String, toCity: String) -> Unit,
+    onGoToAccountSync: () -> Unit
+) {
+    val p = LocalLoongPalette.current
+    val state by viewModel.networkState.collectAsState()
+    val detailState by viewModel.routeDetailState.collectAsState()
+    val session by viewModel.sessionState.collectAsState()
+    val officialAirports by viewModel.officialAirports.collectAsState()
+    val departureAirportsLoading by viewModel.departureAirportsLoading.collectAsState()
+
+    BackHandler(enabled = detailState.route != null) {
+        viewModel.closeRouteCalendarDetail()
+    }
+
+    // 首次登录并同步一个城市的所有航线之前，禁止进入空白航网页面
+    if (!state.isLoading && !state.hasSyncedData) {
+        FirstRunOnboardingGate(
+            screenTitle = "航线",
+            screenWatermark = "LOONG",
+            featureHint = "无预置数据，同步一座城市后解锁航网",
+            session = session,
+            officialAirports = officialAirports,
+            departureAirportsLoading = departureAirportsLoading,
+            officialSyncing = state.officialSyncing,
+            syncDoneCount = state.syncDoneCount,
+            syncTotalCount = state.syncTotalCount,
+            officialSyncProgress = state.officialSyncProgress,
+            onGoToLogin = onGoToAccountSync,
+            onRefreshAirports = { viewModel.refreshOfficialDepartureAirports(silent = false) },
+            onSyncCityAllRoutes = { city -> viewModel.syncSingleCityAllRoutes(city) },
+            onStopSync = { viewModel.stopOfficialNetworkSync() }
+        )
+        return
+    }
+
+    val metaMap = remember(state.cityMetaList) { state.cityMetaList.associateBy { it.city } }
+    val filteredRoutes = state.filteredRoutes
+    val hubColorMap = remember(state.allOriginCities) {
+        state.allOriginCities.mapIndexed { idx, city ->
+            city to HUB_COLOR_PALETTE[idx % HUB_COLOR_PALETTE.size]
+        }.toMap()
+    }
+    val quickHubs = remember(state.allOriginCities) {
+        if (state.allOriginCities.size <= 1) {
+            state.allOriginCities
+        } else {
+            listOf("全部") + state.allOriginCities.take(10)
+        }
+    }
+
+    val listState = rememberLazyListState()
+    val collapseProgress = rememberHeaderCollapseProgress(listState)
+
+    var showFromPicker by remember { mutableStateOf(false) }
+    var showToPicker by remember { mutableStateOf(false) }
+    var swapTurns by remember { mutableIntStateOf(0) }
+    val swapRotation by animateFloatAsState(
+        targetValue = swapTurns * 180f,
+        animationSpec = AppMotion.select(),
+        label = "swapCitySpin"
+    )
+
+    val totalCities = remember(state.allRoutes) {
+        (state.allRoutes.map { it.fromCity } + state.allRoutes.map { it.toCity }).distinct().size
+    }
+
+    AnimatedContent(
+        targetState = detailState.route != null,
+        transitionSpec = {
+            if (targetState) {
+                (slideInHorizontally(AppMotion.revealOffset()) { it } + fadeIn(AppMotion.fade(180))) togetherWith
+                    (slideOutHorizontally(AppMotion.revealOffset()) { -it / 4 } + fadeOut(AppMotion.fade(220)))
+            } else {
+                (slideInHorizontally(AppMotion.revealOffset()) { -it / 4 } + fadeIn(AppMotion.fade(220))) togetherWith
+                    (slideOutHorizontally(AppMotion.revealOffset()) { it } + fadeOut(AppMotion.fade(180)))
+            }
+        },
+        label = "routeDetailSubPage"
+    ) { showingDetail ->
+        if (showingDetail && detailState.route != null) {
+            RouteCalendarDetailPage(
+                detailState = detailState,
+                onBack = { viewModel.closeRouteCalendarDetail() },
+                onRefreshCalendar = { viewModel.refreshOpenedRouteCalendar() },
+                onCalibrateSchedule = { viewModel.calibrateOpenedRouteWeeklySchedule() },
+                onSelectDate = { dateStr -> viewModel.selectRouteDetailDate(dateStr) },
+                onRefreshDateSeats = { dateStr -> viewModel.queryRouteDetailSeats(dateStr) },
+                onJumpToRoundTrip = onJumpToRoundTrip
+            )
+            return@AnimatedContent
+        }
+
+        LacquerPullRefreshBox(
+            listState = listState,
+            modifier = Modifier.fillMaxSize()
+        ) {
+            LazyColumn(
+                state = listState,
+                modifier = Modifier.fillMaxSize(),
+                contentPadding = PaddingValues(bottom = 24.dp),
+                verticalArrangement = Arrangement.spacedBy(AppSpace.cardGap)
+            ) {
+                // 1. 仿 chher-public 漆面/薄暮头图 + 跨缝悬浮全国航线地图卡
+                item {
+                    HeroHeaderOverlapContainer(
+                        subtitle = todayChineseHeaderDate(),
+                        title = "航线",
+                        watermark = "LOONG",
+                        collapseProgress = collapseProgress,
+                        trailingAction = {
+                            HeroCircleActionButton(
+                                icon = Icons.Default.Search,
+                                contentDescription = "按城市筛选",
+                                onClick = { showFromPicker = true }
+                            )
+                        }
+                    ) {
+                        ChinaRouteMapCard(
+                            provinces = state.provinces,
+                            routes = filteredRoutes,
+                            metaMap = metaMap,
+                            originCities = state.allOriginCities,
+                            quickHubs = quickHubs,
+                            hubColorMap = hubColorMap,
+                            selectedOrigin = state.fromCityFilter,
+                            totalCitiesCount = totalCities,
+                            officialSyncedCount = state.officialSyncedCount,
+                            onSelectQuickHub = { hub ->
+                                viewModel.setNetworkFilter(fromCity = if (hub == "全部") "" else hub, toCity = "")
+                            }
+                        )
+                    }
+                }
+
+                // 后台逐条同步时刻与 60 天日历时的实时进度横幅
+                item {
+                    AnimatedVisibility(
+                        visible = state.officialSyncing,
+                        enter = expandVertically(AppMotion.reveal()) + fadeIn(AppMotion.fade()),
+                        exit = shrinkVertically(AppMotion.reveal()) + fadeOut(AppMotion.fade(150))
+                    ) {
+                        Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
+                            LiveSyncProgressBanner(
+                                done = state.syncDoneCount,
+                                total = state.syncTotalCount,
+                                progressText = state.officialSyncProgress,
+                                onStop = { viewModel.stopOfficialNetworkSync() }
+                            )
+                        }
+                    }
+                }
+
+                // 2. 城市筛选区（已按用户要求精简：移除「仅看官方已同步」与底部同步说明）
+                item {
+                    val hasFilter = state.fromCityFilter.isNotBlank() || state.toCityFilter.isNotBlank()
+                    Column(
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .padding(horizontal = AppSpace.groupInset),
+                        verticalArrangement = Arrangement.spacedBy(10.dp)
+                    ) {
+                        SectionTitleRow(
+                            title = "城市筛选",
+                            actionText = if (hasFilter) "重置筛选" else "同步官方航线",
+                            onActionClick = {
+                                if (hasFilter) viewModel.setNetworkFilter(fromCity = "", toCity = "")
+                                else onGoToAccountSync()
+                            }
+                        )
+
+                        SoftCard(contentPadding = 14.dp) {
+                            Row(
+                                modifier = Modifier.fillMaxWidth(),
+                                verticalAlignment = Alignment.CenterVertically,
+                                horizontalArrangement = Arrangement.spacedBy(8.dp)
+                            ) {
+                                CityFilterBox(
+                                    modifier = Modifier.weight(1f),
+                                    label = "出发城市 / 机场",
+                                    city = state.fromCityFilter,
+                                    meta = metaMap[state.fromCityFilter],
+                                    placeholder = "全部出发地",
+                                    onClick = { showFromPicker = true }
+                                )
+
+                                Box(
+                                    modifier = Modifier
+                                        .size(38.dp)
+                                        .pressScale(
+                                            scaleDown = AppPressScale.ICON,
+                                            haptic = true,
+                                            onClick = {
+                                                swapTurns++
+                                                viewModel.swapNetworkCities()
+                                            }
+                                        )
+                                        .clip(CircleShape)
+                                        .background(p.primarySoftBg),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.SwapHoriz,
+                                        contentDescription = "互换城市",
+                                        tint = p.primary,
+                                        modifier = Modifier
+                                            .size(20.dp)
+                                            .graphicsLayer { rotationZ = swapRotation }
+                                    )
+                                }
+
+                                CityFilterBox(
+                                    modifier = Modifier.weight(1f),
+                                    label = "到达城市 / 机场",
+                                    city = state.toCityFilter,
+                                    meta = metaMap[state.toCityFilter],
+                                    placeholder = "全部到达地",
+                                    onClick = { showToPicker = true }
+                                )
+                            }
+                        }
+                    }
+                }
+
+                // 3. 航线详情标题
+                item {
+                    SectionTitleRow(
+                        title = "航线详情 (${filteredRoutes.size})",
+                        modifier = Modifier
+                            .padding(top = 6.dp)
+                            .padding(horizontal = AppSpace.groupInset)
+                    )
+                }
+
+                // 4. 航线详情列表（点击任意航线卡片进入 60 天全日期余票与班期校准页）
+                if (state.isLoading) {
+                    item {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .padding(36.dp),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            CircularProgressIndicator(color = p.primary, strokeWidth = 2.5.dp)
+                        }
+                    }
+                } else if (filteredRoutes.isEmpty()) {
+                    item {
+                        Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
+                            SoftCard(contentPadding = 22.dp) {
+                                Column(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    horizontalAlignment = Alignment.CenterHorizontally,
+                                    verticalArrangement = Arrangement.spacedBy(6.dp)
+                                ) {
+                                    Text("当前筛选条件下暂无航线", style = LoongType.headline, color = p.textPrimary)
+                                    Text(
+                                        "可清空出发/到达筛选，或前往「我的」拉取最新官方航线。",
+                                        style = LoongType.footnote,
+                                        color = p.textSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    items(filteredRoutes, key = { "${it.fromCity}|${it.toCity}" }) { route ->
+                        Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
+                            NetworkRouteDetailCard(
+                                route = route,
+                                onClick = { viewModel.openRouteCalendarDetail(route) }
+                            )
+                        }
+                    }
+                }
+            }
+
+            // 顶部随滚动淡入的紧凑标题条
+            CompactScrollTopBar(
+                title = "航线",
+                collapseProgress = collapseProgress,
+                trailingAction = {
+                    HeroCircleActionButton(
+                        icon = Icons.Default.Search,
+                        contentDescription = "按城市筛选",
+                        onClick = { showFromPicker = true }
+                    )
+                }
+            )
+        }
+    }
+
+    if (showFromPicker) {
+        CityPickerDialog(
+            title = "选择出发城市",
+            cities = state.allOriginCities,
+            cityMetaMap = metaMap,
+            allowAll = true,
+            onDismiss = { showFromPicker = false },
+            onSelect = { city ->
+                viewModel.setNetworkFilter(fromCity = city)
+                showFromPicker = false
+            }
+        )
+    }
+
+    if (showToPicker) {
+        val destOptions = remember(state.fromCityFilter, state.allRoutes, state.allDestCities) {
+            if (state.fromCityFilter.isBlank()) {
+                state.allDestCities
+            } else {
+                state.allRoutes
+                    .filter { it.fromCity == state.fromCityFilter }
+                    .map { it.toCity }
+                    .distinct()
+                    .sorted()
+            }
+        }
+        CityPickerDialog(
+            title = "选择到达城市",
+            cities = destOptions,
+            cityMetaMap = metaMap,
+            allowAll = true,
+            onDismiss = { showToPicker = false },
+            onSelect = { city ->
+                viewModel.setNetworkFilter(toCity = city)
+                showToPicker = false
+            }
+        )
+    }
+}
+
+@Composable
+private fun CityFilterBox(
+    modifier: Modifier,
+    label: String,
+    city: String,
+    meta: CityMeta?,
+    placeholder: String,
+    onClick: () -> Unit
+) {
+    val p = LocalLoongPalette.current
+    val hasCity = city.isNotBlank()
+    val bg by animateColorAsState(
+        targetValue = if (hasCity) p.primarySoftBg.copy(alpha = 0.72f) else p.subtleSurface,
+        animationSpec = AppMotion.fade(),
+        label = "cityBoxBg"
+    )
+    Column(
+        modifier = modifier
+            .pressScale(scaleDown = AppPressScale.CARD, onClick = onClick)
+            .clip(RoundedCornerShape(16.dp))
+            .background(bg)
+            .padding(horizontal = 13.dp, vertical = 10.dp),
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(label, style = LoongType.caption.copy(fontWeight = FontWeight.Medium), color = p.textTertiary)
+        Text(
+            text = if (!hasCity) placeholder else "$city (${CityIataMapper.toApiIata(city)})",
+            style = LoongType.headline.copy(fontSize = 15.5.sp),
+            color = if (!hasCity) p.textSecondary else p.primary,
+            maxLines = 1,
+            overflow = TextOverflow.Ellipsis
+        )
+        if (hasCity && meta != null) {
+            Text(
+                meta.airport,
+                style = LoongType.caption.copy(fontWeight = FontWeight.Normal),
+                color = p.textSecondary,
+                maxLines = 1,
+                overflow = TextOverflow.Ellipsis
+            )
+        }
+    }
+}
+
+@Composable
+private fun ChinaRouteMapCard(
+    provinces: List<ChinaProvincePath>,
+    routes: List<NetworkRouteSummary>,
+    metaMap: Map<String, CityMeta>,
+    originCities: List<String>,
+    quickHubs: List<String>,
+    hubColorMap: Map<String, Color>,
+    selectedOrigin: String,
+    totalCitiesCount: Int,
+    officialSyncedCount: Int,
+    onSelectQuickHub: (String) -> Unit
+) {
+    val p = LocalLoongPalette.current
+    val scope = rememberCoroutineScope()
+    val scaleAnim = remember { Animatable(1f) }
+    var offsetX by remember { mutableFloatStateOf(0f) }
+    var offsetY by remember { mutableFloatStateOf(0f) }
+    val scale = scaleAnim.value
+
+    val parsedPaths = remember(provinces) {
+        provinces.map { parseSvgPathToComposePath(it.path) }
+    }
+
+    val activeCities = remember(routes) {
+        (routes.map { it.fromCity } + routes.map { it.toCity }).toSet()
+    }
+    val originCitiesSet = remember(originCities) { originCities.toSet() }
+
+    val haloPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.STROKE
+            strokeWidth = 3.2f
+            color = android.graphics.Color.WHITE
+            textAlign = Paint.Align.CENTER
+        }
+    }
+    val textPaint = remember {
+        Paint(Paint.ANTI_ALIAS_FLAG).apply {
+            style = Paint.Style.FILL
+            textAlign = Paint.Align.CENTER
+        }
+    }
+
+    SoftCard(cornerRadius = AppRadii.card, floating = true, contentPadding = 14.dp) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.SpaceBetween,
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                Text(
+                    "全国随心飞航网",
+                    style = LoongType.headline,
+                    color = p.textPrimary
+                )
+                Text(
+                    "已通航 $totalCitiesCount 城 · 当前 ${routes.size} 条" +
+                        if (officialSyncedCount > 0) "（官方同步 $officialSyncedCount）" else "",
+                    style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+                    color = p.textSecondary
+                )
+            }
+
+            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
+                SmallMapCtrlBtn(Icons.Default.Add, "放大") {
+                    scope.launch {
+                        scaleAnim.animateTo((scaleAnim.value * 1.35f).coerceAtMost(4.5f), AppMotion.reveal())
+                    }
+                }
+                SmallMapCtrlBtn(Icons.Default.Remove, "缩小") {
+                    scope.launch {
+                        val next = (scaleAnim.value / 1.35f).coerceAtLeast(1f)
+                        if (next <= 1.02f) {
+                            offsetX = 0f
+                            offsetY = 0f
+                        }
+                        scaleAnim.animateTo(next, AppMotion.reveal())
+                    }
+                }
+                SmallMapCtrlBtn(Icons.Default.CenterFocusStrong, "重置") {
+                    offsetX = 0f
+                    offsetY = 0f
+                    scope.launch {
+                        scaleAnim.animateTo(1f, AppMotion.reveal())
+                    }
+                }
+            }
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        Box(
+            modifier = Modifier
+                .fillMaxWidth()
+                .aspectRatio(1.24f)
+                .clip(RoundedCornerShape(16.dp))
+                .background(p.subtleSurface)
+                .clipToBounds()
+                .pointerInput(Unit) {
+                    detectTransformGestures { _, pan, zoom, _ ->
+                        val nextScale = (scaleAnim.value * zoom).coerceIn(1f, 4.5f)
+                        scope.launch { scaleAnim.snapTo(nextScale) }
+                        if (nextScale <= 1.01f) {
+                            offsetX = 0f
+                            offsetY = 0f
+                        } else {
+                            val maxX = size.width * (nextScale - 1f) / 2f
+                            val maxY = size.height * (nextScale - 1f) / 2f
+                            offsetX = (offsetX + pan.x).coerceIn(-maxX, maxX)
+                            offsetY = (offsetY + pan.y).coerceIn(-maxY, maxY)
+                        }
+                    }
+                }
+        ) {
+            Canvas(modifier = Modifier.fillMaxSize()) {
+                val baseScale = minOf(size.width / 1000f, size.height / 780f)
+                val dx = (size.width - 1000f * baseScale) / 2f
+                val dy = (size.height - 780f * baseScale) / 2f
+
+                withTransform({
+                    translate(left = size.width / 2f + offsetX, top = size.height / 2f + offsetY)
+                    scale(scaleX = scale, scaleY = scale, pivot = Offset.Zero)
+                    translate(left = -size.width / 2f + dx, top = -size.height / 2f + dy)
+                    scale(scaleX = baseScale, scaleY = baseScale, pivot = Offset.Zero)
+                }) {
+                    val provinceFill = Color(0xFFFFFFFF)
+                    val provinceStroke = Color(0xFFDCE1EA)
+                    for (path in parsedPaths) {
+                        drawPath(path = path, color = provinceFill)
+                        drawPath(
+                            path = path,
+                            color = provinceStroke,
+                            style = Stroke(width = 1.1f / scale)
+                        )
+                    }
+
+                    val isFocused = selectedOrigin.isNotBlank()
+                    for (route in routes) {
+                        val fromMeta = metaMap[route.fromCity] ?: continue
+                        val toMeta = metaMap[route.toCity] ?: continue
+                        val x1 = projectX(fromMeta.lng)
+                        val y1 = projectY(fromMeta.lat)
+                        val x2 = projectX(toMeta.lng)
+                        val y2 = projectY(toMeta.lat)
+
+                        val baseColor = hubColorMap[route.fromCity] ?: p.primary
+                        val lineAlpha = when {
+                            isFocused -> 0.85f
+                            route.isOfficialSynced -> 0.72f
+                            else -> 0.48f
+                        }
+                        val strokeW = (if (isFocused || route.isOfficialSynced) 1.85f else 1.15f) / scale
+
+                        drawLine(
+                            color = baseColor.copy(alpha = lineAlpha),
+                            start = Offset(x1, y1),
+                            end = Offset(x2, y2),
+                            strokeWidth = strokeW
+                        )
+                    }
+
+                    for (city in activeCities) {
+                        val meta = metaMap[city] ?: continue
+                        val cx = projectX(meta.lng)
+                        val cy = projectY(meta.lat)
+                        val isHub = city in originCitiesSet || city == selectedOrigin
+                        val dotColor = hubColorMap[city] ?: Color(0xFF334155)
+                        val radius = (if (isHub) 5.2f else 2.8f) / scale
+
+                        drawCircle(color = Color.White, radius = radius + 1.4f / scale, center = Offset(cx, cy))
+                        drawCircle(color = dotColor, radius = radius, center = Offset(cx, cy))
+
+                        val shouldLabel = isHub ||
+                            selectedOrigin.isNotBlank() ||
+                            activeCities.size <= 45 ||
+                            scale >= 1.4f
+
+                        if (shouldLabel) {
+                            val labelSize = (if (isHub) 18f else 12.5f) / scale
+                            val yOffset = if (isHub) -9f / scale else -6f / scale
+
+                            haloPaint.textSize = labelSize
+                            haloPaint.strokeWidth = 3.2f / scale
+                            haloPaint.typeface = if (isHub) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+
+                            textPaint.textSize = labelSize
+                            textPaint.color = (if (isHub) dotColor else Color(0xFF1E293B)).toArgb()
+                            textPaint.typeface = if (isHub) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+
+                            drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, haloPaint)
+                            drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, textPaint)
+                        }
+                    }
+                }
+            }
+
+            Surface(
+                color = Color.White.copy(alpha = 0.90f),
+                shape = RoundedCornerShape(AppRadii.xs),
+                modifier = Modifier
+                    .align(Alignment.BottomStart)
+                    .padding(8.dp)
+            ) {
+                Text(
+                    "双指/按钮缩放 · 拖拽漫游 · 点击下方枢纽聚焦",
+                    style = LoongType.caption.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
+                    color = p.textSecondary,
+                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
+                )
+            }
+        }
+
+        if (quickHubs.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
+
+            Row(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .horizontalScroll(rememberScrollState()),
+                horizontalArrangement = Arrangement.spacedBy(7.dp)
+            ) {
+                quickHubs.forEach { hub ->
+                    val isSel = (hub == "全部" && selectedOrigin.isBlank()) || hub == selectedOrigin
+                    val pillBg by animateColorAsState(
+                        targetValue = if (isSel) p.primarySoftBg else p.subtleSurface,
+                        animationSpec = AppMotion.fade(),
+                        label = "hubBg_$hub"
+                    )
+                    val pillFg by animateColorAsState(
+                        targetValue = if (isSel) p.primary else p.textSecondary,
+                        animationSpec = AppMotion.fade(),
+                        label = "hubFg_$hub"
+                    )
+                    Row(
+                        modifier = Modifier
+                            .pressScale(
+                                scaleDown = AppPressScale.CONTROL,
+                                haptic = true,
+                                onClick = { onSelectQuickHub(hub) }
+                            )
+                            .clip(RoundedCornerShape(AppRadii.sm))
+                            .background(pillBg)
+                            .padding(horizontal = 11.dp, vertical = 7.dp),
+                        verticalAlignment = Alignment.CenterVertically,
+                        horizontalArrangement = Arrangement.spacedBy(5.dp)
+                    ) {
+                        hubColorMap[hub]?.let { c ->
+                            Box(
+                                modifier = Modifier
+                                    .size(7.dp)
+                                    .clip(CircleShape)
+                                    .background(c)
+                            )
+                        }
+                        Text(
+                            text = hub,
+                            style = LoongType.footnoteStrong,
+                            color = pillFg
+                        )
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun SmallMapCtrlBtn(
+    icon: androidx.compose.ui.graphics.vector.ImageVector,
+    desc: String,
+    onClick: () -> Unit
+) {
+    val p = LocalLoongPalette.current
+    Box(
+        modifier = Modifier
+            .size(32.dp)
+            .pressScale(scaleDown = AppPressScale.ICON, haptic = true, onClick = onClick)
+            .clip(RoundedCornerShape(10.dp))
+            .background(p.primarySoftBg),
+        contentAlignment = Alignment.Center
+    ) {
+        Icon(icon, contentDescription = desc, modifier = Modifier.size(17.dp), tint = p.primary)
+    }
+}
+
+@Composable
+private fun NetworkRouteDetailCard(
+    route: NetworkRouteSummary,
+    onClick: () -> Unit
+) {
+    val p = LocalLoongPalette.current
+    SoftCard(
+        modifier = Modifier.pressScale(scaleDown = AppPressScale.CARD, haptic = true, onClick = onClick),
+        cornerRadius = AppRadii.card,
+        contentPadding = 16.dp
+    ) {
+        Row(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalArrangement = Arrangement.spacedBy(8.dp),
+            verticalAlignment = Alignment.CenterVertically
+        ) {
+            Column(
+                modifier = Modifier.weight(1f),
+                verticalArrangement = Arrangement.spacedBy(2.dp)
+            ) {
+                Text(
+                    "${route.fromCity} → ${route.toCity}",
+                    style = LoongType.headline,
+                    color = p.textPrimary
+                )
+                Text(
+                    "${route.fromAirport} (${route.fromIata}) → ${route.toAirport} (${route.toIata})",
+                    style = LoongType.footnote,
+                    color = p.textSecondary,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+            }
+
+            Icon(
+                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowRight,
+                contentDescription = "查看近40天余票",
+                tint = p.textTertiary,
+                modifier = Modifier.size(18.dp)
+            )
+        }
+
+        Spacer(Modifier.height(10.dp))
+
+        if (route.flights.isNotEmpty()) {
+            Box(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(RoundedCornerShape(16.dp))
+                    .background(p.subtleSurface)
+            ) {
+                Column(
+                    modifier = Modifier.padding(horizontal = 12.dp, vertical = 10.dp),
+                    verticalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    route.flights.forEachIndexed { idx, f ->
+                        if (idx > 0) HorizontalDivider(thickness = AppSpace.hairline, color = p.separator)
+                        val freqLabel = RoundTripMatcher.formatChineseFrequency(f.frequency)
+                        val cleanFlightNo = LoongAirApi.decodeFlightNo(f.flightNo)
+                            ?: f.flightNo.takeUnless { it.contains("&") }
+                            ?: "GJ班次"
+                        Row(
+                            modifier = Modifier.fillMaxWidth(),
+                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Text(
+                                text = "${f.depTime}-${f.arrTime}",
+                                style = LoongType.tabularMeta.copy(fontWeight = FontWeight.Bold),
+                                color = p.textPrimary,
+                                maxLines = 1
+                            )
+                            Text(
+                                text = cleanFlightNo,
+                                style = LoongType.tabularMeta.copy(fontWeight = FontWeight.SemiBold),
+                                color = p.textPrimary,
+                                maxLines = 1
+                            )
+                            TonePillBadge(
+                                text = freqLabel,
+                                backgroundColor = p.primarySoftBg,
+                                contentColor = p.primary,
+                                cornerRadius = 7.dp
+                            )
+                            Text(
+                                text = "${f.stopover} · ${f.aircraft.ifBlank { "A320" }}",
+                                style = LoongType.footnote.copy(fontSize = 12.sp),
+                                color = p.textTertiary,
+                                textAlign = TextAlign.End,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis,
+                                modifier = Modifier.weight(1f)
+                            )
+                        }
+                    }
+                }
+            }
+        } else {
+            Text(
+                "官方畅飞卡已开通此航线（可在「往返」页按日期查实时班次与余票）",
+                style = LoongType.footnote,
+                color = p.textSecondary
+            )
+        }
+    }
+}
+
+private fun projectX(lng: Double): Float =
+    (40.0 + ((lng - 73.0) / 62.0) * 920.0).toFloat()
+
+private fun projectY(lat: Double): Float =
+    (40.0 + ((53.5 - lat) / 35.5) * 700.0).toFloat()
+
+private fun parseSvgPathToComposePath(svgPath: String): Path {
+    val path = Path()
+    val tokens = svgPath.trim().split(Regex("\\s+"))
+    var i = 0
+    while (i < tokens.size) {
+        when (tokens[i]) {
+            "M" -> {
+                val xy = tokens.getOrNull(i + 1)?.split(",")
+                if (xy != null && xy.size == 2) {
+                    val x = xy[0].toFloatOrNull()
+                    val y = xy[1].toFloatOrNull()
+                    if (x != null && y != null) path.moveTo(x, y)
+                }
+                i += 2
+            }
+            "L" -> {
+                val xy = tokens.getOrNull(i + 1)?.split(",")
+                if (xy != null && xy.size == 2) {
+                    val x = xy[0].toFloatOrNull()
+                    val y = xy[1].toFloatOrNull()
+                    if (x != null && y != null) path.lineTo(x, y)
+                }
+                i += 2
+            }
+            "Z", "z" -> {
+                path.close()
+                i += 1
+            }
+            else -> i += 1
+        }
+    }
+    return path
+}

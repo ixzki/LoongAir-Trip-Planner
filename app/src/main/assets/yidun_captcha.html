@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no" />
+  <title>安全验证</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+    html, body {
+      width: 100%;
+      height: 100%;
+      background: #ffffff;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+      color: #1f2937;
+      overflow: hidden;
+    }
+    .wrap {
+      width: 100%;
+      height: 100%;
+      padding: 4px 0 6px 0;
+    }
+    .status {
+      width: 100%;
+      font-size: 13px;
+      line-height: 20px;
+      color: #6b7280;
+      text-align: center;
+      margin-bottom: 10px;
+    }
+    #captcha-shell {
+      width: 100%;
+      display: block;
+    }
+    #captcha-container {
+      display: block;
+    }
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <div id="status" class="status">正在加载网易易盾安全验证...</div>
+    <div id="captcha-shell">
+      <div id="captcha-container"></div>
+    </div>
+  </div>
+  <script>
+    (function () {
+      var statusEl = document.getElementById('status');
+      var containerEl = document.getElementById('captcha-container');
+      var shellEl = document.getElementById('captcha-shell');
+
+      function reportError(msg) {
+        statusEl.textContent = msg;
+        if (window.YidunBridge && window.YidunBridge.onError) {
+          window.YidunBridge.onError(msg);
+        }
+      }
+
+      // 仅校正外边距，确保拼图顶部不被裁切且水平严格居中（不使用 transform）
+      function alignCaptchaBox() {
+        try {
+          var vw = document.documentElement.clientWidth || window.innerWidth || 300;
+          var nodes = containerEl.querySelectorAll('.yidun_panel, .yidun_bgimg, .yidun_control, .yidun');
+          var minTop = statusEl.getBoundingClientRect().bottom + 10;
+          var topMost = Infinity;
+          var leftMost = Infinity;
+          var rightMost = -Infinity;
+
+          for (var i = 0; i < nodes.length; i++) {
+            var r = nodes[i].getBoundingClientRect();
+            if (r.width > 20 && r.height > 15) {
+              if (r.top < topMost) topMost = r.top;
+              if (r.left < leftMost) leftMost = r.left;
+              if (r.right > rightMost) rightMost = r.right;
+            }
+          }
+
+          if (isFinite(topMost) && topMost < minTop) {
+            var curMt = parseFloat(shellEl.style.marginTop || '0') || 0;
+            shellEl.style.marginTop = Math.ceil(curMt + (minTop - topMost)) + 'px';
+          }
+
+          if (isFinite(leftMost) && isFinite(rightMost)) {
+            var actualW = rightMost - leftMost;
+            if (actualW > 0 && actualW <= vw) {
+              var targetLeft = (vw - actualW) / 2;
+              var dx = targetLeft - leftMost;
+              if (Math.abs(dx) > 1.5) {
+                var curMl = parseFloat(containerEl.style.marginLeft || '0') || 0;
+                containerEl.style.marginLeft = Math.max(0, Math.round(curMl + dx)) + 'px';
+              }
+            }
+          }
+        } catch (_) {}
+      }
+
+      function initCaptcha() {
+        if (typeof initNECaptcha === 'undefined') {
+          reportError('未能加载安全验证组件，请检查网络后重试');
+          return;
+        }
+        try {
+          var vw = document.documentElement.clientWidth || window.innerWidth || 300;
+          var captchaWidth = Math.min(300, Math.max(240, Math.floor(vw - 20)));
+          containerEl.style.width = captchaWidth + 'px';
+          containerEl.style.marginLeft = Math.max(0, Math.floor((vw - captchaWidth) / 2)) + 'px';
+
+          initNECaptcha({
+            captchaId: 'd574bdc4ef2f474f9d21fe3c59291491',
+            element: '#captcha-container',
+            mode: 'embed',
+            width: captchaWidth + 'px',
+            onReady: function () {
+              statusEl.textContent = '请拖动滑块或按提示完成验证';
+              setTimeout(alignCaptchaBox, 60);
+              setTimeout(alignCaptchaBox, 260);
+              setTimeout(alignCaptchaBox, 650);
+            },
+            onVerify: function (err, data) {
+              if (err) return;
+              if (data && data.validate) {
+                statusEl.textContent = '验证通过，正在发送短信...';
+                if (window.YidunBridge && window.YidunBridge.onSuccess) {
+                  window.YidunBridge.onSuccess(data.validate);
+                }
+              }
+            }
+          }, function () {}, function (err) {
+            reportError('验证组件加载失败：' + (err && err.message ? err.message : '网络异常'));
+          });
+        } catch (e) {
+          reportError('初始化异常：' + e.message);
+        }
+      }
+
+      // 动态异步加载官方易盾脚本，避免阻塞首帧白屏
+      var s = document.createElement('script');
+      s.src = 'https://cstaticdun.126.net/load.min.js';
+      s.async = true;
+      s.onload = initCaptcha;
+      s.onerror = function () {
+        reportError('安全验证脚本加载失败，请检查网络连接');
+      };
+      document.head.appendChild(s);
+    })();
+  </script>
+</body>
+</html>
