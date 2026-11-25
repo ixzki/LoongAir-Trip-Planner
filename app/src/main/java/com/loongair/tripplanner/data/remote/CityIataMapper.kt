@@ -28,10 +28,10 @@ object CityIataMapper {
         "西安" to "XIY", "西宁" to "XNN", "徐州" to "XUZ", "烟台" to "YNT",
         "珠海" to "ZUH", "包头" to "BAV", "南京" to "NKG", "南宁" to "NNG",
         "常州" to "CZX", "柳州" to "LZH", "济南" to "TNA", "福州" to "FOC",
-        "赤峰" to "CIF", "延吉" to "YNJ", "长白山" to "NBS", "厦门" to "XMN",
+        "赤峰" to "CIF", "延吉" to "YNJ", "长白山" to "NBS", "白山" to "NBS", "厦门" to "XMN",
         "天津" to "TSN", "合肥" to "HFE", "南昌" to "KHN", "石家庄" to "SJW",
         "拉萨" to "LXA", "桂林" to "KWL", "大理" to "DLU", "揭阳" to "SWA",
-        "湛江" to "ZHA", "绵阳" to "MIG"
+        "湛江" to "ZHA", "绵阳" to "MIG", "博鳌" to "BAR", "德宏" to "LUM", "日照" to "RIZ"
     )
 
     /**
@@ -116,13 +116,23 @@ object CityIataMapper {
         "jiaxing" to "嘉兴", "jx" to "嘉兴", "wuxi" to "无锡", "changzhou" to "常州",
         "xiangyang" to "襄阳", "jingzhou" to "荆州", "ganzhou" to "赣州",
         "hengyang" to "衡阳", "liuzhou" to "柳州", "dali" to "大理", "guilin" to "桂林",
-        "hefei" to "合肥", "nanchang" to "南昌", "tianjin" to "天津", "shijiazhuang" to "石家庄"
+        "hefei" to "合肥", "nanchang" to "南昌", "tianjin" to "天津", "shijiazhuang" to "石家庄",
+        "boao" to "博鳌", "baishan" to "白山", "changbaishan" to "白山", "dehong" to "德宏", "rizhao" to "日照"
     )
+
+    /**
+     * 严格判定是否为 3 位纯英文字母 IATA 三字码。
+     * 注意：绝不可使用 Char.isLetter()，否则「哈尔滨」「张家界」「阿克苏」等三字中文城市名会被误判为三字码！
+     */
+    fun isAsciiIataCode(value: String): Boolean {
+        val s = value.trim()
+        return s.length == 3 && s.all { it in 'A'..'Z' || it in 'a'..'z' }
+    }
 
     fun registerDynamic(cityName: String, airportCode: String, pinyin: String = "") {
         val c = cityName.trim()
         val code = airportCode.trim().uppercase()
-        if (c.isNotEmpty() && code.length == 3) {
+        if (c.isNotEmpty() && isAsciiIataCode(code)) {
             dynamicCityToIata[c] = code
             dynamicIataToCity[code] = c
         }
@@ -134,7 +144,7 @@ object CityIataMapper {
 
     fun toApiIata(cityOrCode: String): String {
         val clean = cityOrCode.trim()
-        if (clean.length == 3 && clean.all { it.isLetter() }) return clean.uppercase()
+        if (isAsciiIataCode(clean)) return clean.uppercase()
         val resolved = toCityName(clean)
         return dynamicCityToIata[resolved] ?: cityToApiIata[resolved] ?: clean.uppercase()
     }
@@ -179,10 +189,11 @@ object CityIataMapper {
         "上海" to (121.80 to 31.14), "邯郸" to (114.43 to 36.53),
         "东营" to (118.79 to 37.51), "泸州" to (105.47 to 28.98), "达州" to (107.43 to 31.14),
         "巴中" to (106.65 to 31.79), "茅台" to (106.44 to 27.70), "延吉" to (129.45 to 42.88),
-        "长白山" to (127.61 to 42.07), "厦门" to (118.13 to 24.54), "天津" to (117.35 to 39.12),
+        "长白山" to (127.61 to 42.07), "白山" to (127.61 to 42.07), "厦门" to (118.13 to 24.54), "天津" to (117.35 to 39.12),
         "合肥" to (117.00 to 31.98), "南昌" to (115.90 to 28.86), "石家庄" to (114.70 to 38.28),
         "拉萨" to (90.91 to 29.30), "桂林" to (110.04 to 25.22), "大理" to (100.32 to 25.65),
-        "揭阳" to (116.50 to 23.55), "湛江" to (110.36 to 21.21), "绵阳" to (104.74 to 31.43)
+        "揭阳" to (116.50 to 23.55), "湛江" to (110.36 to 21.21), "绵阳" to (104.74 to 31.43),
+        "博鳌" to (110.46 to 19.14), "德宏" to (98.53 to 24.40), "日照" to (119.33 to 35.40)
     )
 
     fun geoCoordsFor(cityName: String): Pair<Double, Double>? = geoCoords[cityName.trim()]

@@ -17,6 +17,7 @@ import com.loongair.tripplanner.data.repository.RoundTripCandidate
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
 import com.loongair.tripplanner.data.repository.RoundTripQuery
 import com.loongair.tripplanner.util.ChinaClock
+import com.loongair.tripplanner.util.suspendRunCatching
 import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
@@ -285,6 +286,28 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             )
             if (cal.isEmpty() && sessionState.value.isLoggedIn) {
                 refreshOpenedRouteCalendar()
+            } else if (cal.isNotEmpty() && route.flights.isEmpty() && sessionState.value.isLoggedIn) {
+                autoBackfillOpenedRouteSchedule(route.fromCity, route.toCity, cal)
+            }
+        }
+    }
+
+    private fun autoBackfillOpenedRouteSchedule(
+        fromCity: String,
+        toCity: String,
+        cal: Map<String, Int>
+    ) {
+        viewModelScope.launch {
+            val sampled = suspendRunCatching {
+                repo.ensureRouteScheduleSampled(fromCity, toCity, cal)
+            }.getOrDefault(false)
+            if (!sampled) return@launch
+            val updatedSummary = refreshSingleRouteInState(fromCity, toCity) ?: return@launch
+            val seats = repo.getRouteSeatSnapshotsByDate(fromCity, toCity)
+            _routeDetailState.update { st ->
+                if (st.route?.fromCity == fromCity && st.route.toCity == toCity) {
+                    st.copy(route = updatedSummary, seatsByDate = seats)
+                } else st
             }
         }
     }
@@ -306,6 +329,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             try {
                 repo.refreshRouteCalendar(currentRoute.fromCity, currentRoute.toCity)
                 val cal = repo.getRouteCalendarMap(currentRoute.fromCity, currentRoute.toCity)
+                if (currentRoute.flights.isEmpty() && cal.isNotEmpty()) {
+                    suspendRunCatching {
+                        repo.ensureRouteScheduleSampled(currentRoute.fromCity, currentRoute.toCity, cal)
+                    }
+                }
+                val seats = repo.getRouteSeatSnapshotsByDate(currentRoute.fromCity, currentRoute.toCity)
                 val updatedSummary = refreshSingleRouteInState(currentRoute.fromCity, currentRoute.toCity)
                     ?: currentRoute
                 val today = ChinaClock.today()
@@ -316,6 +345,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     st.copy(
                         route = updatedSummary,
                         calendarByDate = cal,
+                        seatsByDate = seats,
                         selectedDate = st.selectedDate
                             ?: updatedSummary.nearestAvailableDate?.takeIf { it in todayStr..maxDateStr }
                     )

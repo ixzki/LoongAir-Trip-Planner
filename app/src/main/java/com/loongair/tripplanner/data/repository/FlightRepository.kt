@@ -41,7 +41,10 @@ data class NetworkRouteSummary(
     val isOfficialSynced: Boolean,
     val availableDaysCount: Int,
     val nearestAvailableDate: String?,
-    val officialUpdatedAt: Long?
+    val officialUpdatedAt: Long?,
+    val isCalendarSynced: Boolean = false,
+    val soldOutDaysCount: Int = 0,
+    val hasOperatingDaysInCalendar: Boolean = false
 )
 
 class FlightRepository(
@@ -74,8 +77,36 @@ class FlightRepository(
 
         // 自动修复历史同步缓存中未解码的长龙混淆航班号（如 "168&248&..." -> "GJ8859"）
         repairObfuscatedFlightNumbers()
-        // 将已缓存的双机场城市（如成都天府/成都双流、北京首都/大兴、上海浦东/虹桥、遵义新舟/茅台）分开标注
+        // 将已缓存的双机场城市（如成都天府/成都双流、北京首都/大兴、上海浦东/虹桥、遵义新舟/茅台）分开标注，并修复可能被误存的非英文三字码
         upgradeDualAirportNames()
+        // 自动清理历史同步中被近3天/30天外「-1 未开放」污染的虚标执飞星期（如将误标「一二三四五日」还原为「一三五日」）
+        repairCalendarPollutedFrequencies()
+    }
+
+    private suspend fun repairCalendarPollutedFrequencies() {
+        val todayStr = ChinaClock.today().toString()
+        val allFlights = db.flightRouteDao().getAll()
+        if (allFlights.isEmpty()) return
+        val allCalsByPair = db.calendarCacheDao().getAllFromDate(todayStr)
+            .groupBy { "${it.fromCity}|${it.toCity}" }
+        if (allCalsByPair.isEmpty()) return
+
+        val updated = allFlights.mapNotNull { route ->
+            val cals = allCalsByPair["${route.fromCity}|${route.toCity}"] ?: return@mapNotNull null
+            val calMap = cals.associate { it.flightDate to it.status }
+            val validDows = RoundTripMatcher.deriveFrequencyFromCalendar(calMap)
+                .filter { it in '1'..'7' }
+                .toSet()
+            if (validDows.isEmpty()) return@mapNotNull null
+            val currentDows = route.frequency.filter { it in '1'..'7' }.toSet()
+            val cleaned = currentDows.intersect(validDows).sorted().joinToString("")
+            if (cleaned.isNotEmpty() && cleaned != route.frequency) {
+                route.copy(frequency = cleaned)
+            } else null
+        }
+        if (updated.isNotEmpty()) {
+            db.flightRouteDao().insertAll(updated)
+        }
     }
 
     private suspend fun upgradeDualAirportNames() {
@@ -83,32 +114,48 @@ class FlightRepository(
         var airportChanged = false
         val renamedCities = mutableMapOf<String, String>()
         val normalizedAirports = airports.map { ap ->
-            val better = CityIataMapper.dualAirportLabelForCode(ap.airportCode)
-            if (better != null && better != ap.cityName) {
-                airportChanged = true
+            val cleanCode = if (CityIataMapper.isAsciiIataCode(ap.airportCode)) {
+                ap.airportCode.trim().uppercase()
+            } else {
+                CityIataMapper.toApiIata(ap.cityName)
+            }
+            val better = CityIataMapper.dualAirportLabelForCode(cleanCode)
+            val nextCity = if (better != null && better != ap.cityName) {
                 renamedCities[ap.cityName] = better
-                ap.copy(cityName = better)
+                better
+            } else ap.cityName
+            if (nextCity != ap.cityName || cleanCode != ap.airportCode) {
+                airportChanged = true
+                ap.copy(cityName = nextCity, airportCode = cleanCode)
             } else ap
         }
         if (airportChanged) {
-            db.officialAirportDao().clearAll()
-            db.officialAirportDao().upsertAll(normalizedAirports)
+            db.withTransaction {
+                db.officialAirportDao().clearAll()
+                db.officialAirportDao().upsertAll(normalizedAirports)
+            }
         }
 
         val officialRoutes = db.officialRouteDao().getAll()
         val fixedOfficial = officialRoutes.any { r ->
-            val newFrom = CityIataMapper.dualAirportLabelForCode(r.fromIata) ?: r.fromCity
-            val newTo = CityIataMapper.dualAirportLabelForCode(r.toIata) ?: r.toCity
-            newFrom != r.fromCity || newTo != r.toCity
+            val fromCode = if (CityIataMapper.isAsciiIataCode(r.fromIata)) r.fromIata.trim().uppercase() else CityIataMapper.toApiIata(r.fromCity)
+            val toCode = if (CityIataMapper.isAsciiIataCode(r.toIata)) r.toIata.trim().uppercase() else CityIataMapper.toApiIata(r.toCity)
+            val newFrom = CityIataMapper.dualAirportLabelForCode(fromCode) ?: r.fromCity
+            val newTo = CityIataMapper.dualAirportLabelForCode(toCode) ?: r.toCity
+            newFrom != r.fromCity || newTo != r.toCity || fromCode != r.fromIata || toCode != r.toIata
         }
         if (fixedOfficial) {
-            db.officialRouteDao().clearAll()
             val merged = officialRoutes.map { r ->
-                val newFrom = CityIataMapper.dualAirportLabelForCode(r.fromIata) ?: r.fromCity
-                val newTo = CityIataMapper.dualAirportLabelForCode(r.toIata) ?: r.toCity
-                r.copy(fromCity = newFrom, toCity = newTo)
+                val fromCode = if (CityIataMapper.isAsciiIataCode(r.fromIata)) r.fromIata.trim().uppercase() else CityIataMapper.toApiIata(r.fromCity)
+                val toCode = if (CityIataMapper.isAsciiIataCode(r.toIata)) r.toIata.trim().uppercase() else CityIataMapper.toApiIata(r.toCity)
+                val newFrom = CityIataMapper.dualAirportLabelForCode(fromCode) ?: r.fromCity
+                val newTo = CityIataMapper.dualAirportLabelForCode(toCode) ?: r.toCity
+                r.copy(fromCity = newFrom, toCity = newTo, fromIata = fromCode, toIata = toCode)
             }
-            db.officialRouteDao().upsertAll(merged)
+            db.withTransaction {
+                db.officialRouteDao().clearAll()
+                db.officialRouteDao().upsertAll(merged)
+            }
         }
 
         val routes = db.flightRouteDao().getAll()
@@ -511,6 +558,33 @@ class FlightRepository(
     }
 
     /**
+     * 当用户打开一条暂无时刻细节 (flights 为空) 的航线详情页时，基于放票日历自动抽样补全航班时刻与班期。
+     */
+    suspend fun ensureRouteScheduleSampled(
+        fromCity: String,
+        toCity: String,
+        calMap: Map<String, Int>
+    ): Boolean = withContext(Dispatchers.IO) {
+        if (db.flightRouteDao().getRoutes(fromCity, toCity).isNotEmpty()) return@withContext true
+        if (calMap.isEmpty()) return@withContext false
+        val calDows = RoundTripMatcher.deriveFrequencyFromCalendar(calMap)
+        val (oddDate, evenDate) = RoundTripMatcher.pickDualPatternSampleDates(calMap)
+        if (oddDate == null && evenDate == null) return@withContext false
+        val fromIata = CityIataMapper.toApiIata(fromCity)
+        val toIata = CityIataMapper.toApiIata(toCity)
+        syncDirectionByDualSamples(
+            fromCity = fromCity,
+            toCity = toCity,
+            fromIata = fromIata,
+            toIata = toIata,
+            oddDate = oddDate,
+            evenDate = evenDate,
+            calOperatingDows = calDows
+        )
+        db.flightRouteDao().getRoutes(fromCity, toCity).isNotEmpty()
+    }
+
+    /**
      * 针对单条航线执行「周一至周日」全 7 天精确采样校准，逐航班还原真实执飞星期（例如 GJ8124=一三五日、GJ8148=二四六）
      */
     suspend fun calibrateRouteWeeklySchedule(
@@ -606,7 +680,7 @@ class FlightRepository(
 
         val metaMap = getSyncedCityMetadata().associateBy { it.city }
         val todayStr = ChinaClock.today().toString()
-        val availCals = db.calendarCacheDao().getAllAvailable(todayStr)
+        val allCalsByPair = db.calendarCacheDao().getAllFromDate(todayStr)
             .groupBy { "${it.fromCity}|${it.toCity}" }
 
         val flightsByPair = allFlights.groupBy { "${it.fromCity}|${it.toCity}" }
@@ -623,7 +697,10 @@ class FlightRepository(
             val flights = flightsByPair[key].orEmpty()
             val fromMeta = metaMap[fromCity]
             val toMeta = metaMap[toCity]
-            val cals = availCals[key].orEmpty()
+            val routeCals = allCalsByPair[key].orEmpty()
+            val availCals = routeCals.filter { it.status == 1 }
+            val soldOutCnt = routeCals.count { it.status == 0 }
+            val hasOperating = routeCals.any { it.status == 1 || it.status == 0 || it.status == -1 || it.status == -3 }
 
             val fromAirportName = listOfNotNull(
                 off?.fromAirport?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
@@ -641,15 +718,18 @@ class FlightRepository(
             NetworkRouteSummary(
                 fromCity = fromCity,
                 fromAirport = fromAirportName,
-                fromIata = off?.fromIata?.ifBlank { CityIataMapper.toApiIata(fromCity) } ?: CityIataMapper.toApiIata(fromCity),
+                fromIata = off?.fromIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(fromCity),
                 toCity = toCity,
                 toAirport = toAirportName,
-                toIata = off?.toIata?.ifBlank { CityIataMapper.toApiIata(toCity) } ?: CityIataMapper.toApiIata(toCity),
+                toIata = off?.toIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(toCity),
                 flights = flights,
                 isOfficialSynced = off != null,
-                availableDaysCount = cals.size,
-                nearestAvailableDate = cals.firstOrNull()?.flightDate,
-                officialUpdatedAt = off?.updatedAt
+                availableDaysCount = availCals.size,
+                nearestAvailableDate = availCals.firstOrNull()?.flightDate,
+                officialUpdatedAt = off?.updatedAt,
+                isCalendarSynced = routeCals.isNotEmpty(),
+                soldOutDaysCount = soldOutCnt,
+                hasOperatingDaysInCalendar = hasOperating
             )
         }.sortedWith(
             compareByDescending<NetworkRouteSummary> { it.availableDaysCount }
@@ -671,8 +751,10 @@ class FlightRepository(
             val fromAp = db.officialAirportDao().getByCity(fromCity)
             val toAp = db.officialAirportDao().getByCity(toCity)
             val todayStr = ChinaClock.today().toString()
-            val cals = db.calendarCacheDao().getAllForRoute(fromCity, toCity, todayStr)
-                .filter { it.status == 1 }
+            val routeCals = db.calendarCacheDao().getAllForRoute(fromCity, toCity, todayStr)
+            val availCals = routeCals.filter { it.status == 1 }
+            val soldOutCnt = routeCals.count { it.status == 0 }
+            val hasOperating = routeCals.any { it.status == 1 || it.status == 0 || it.status == -1 || it.status == -3 }
 
             val fromAirportName = listOfNotNull(
                 off?.fromAirport?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
@@ -690,15 +772,18 @@ class FlightRepository(
             NetworkRouteSummary(
                 fromCity = fromCity,
                 fromAirport = fromAirportName,
-                fromIata = off?.fromIata?.ifBlank { CityIataMapper.toApiIata(fromCity) } ?: CityIataMapper.toApiIata(fromCity),
+                fromIata = off?.fromIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(fromCity),
                 toCity = toCity,
                 toAirport = toAirportName,
-                toIata = off?.toIata?.ifBlank { CityIataMapper.toApiIata(toCity) } ?: CityIataMapper.toApiIata(toCity),
+                toIata = off?.toIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(toCity),
                 flights = flights,
                 isOfficialSynced = off != null,
-                availableDaysCount = cals.size,
-                nearestAvailableDate = cals.firstOrNull()?.flightDate,
-                officialUpdatedAt = off?.updatedAt
+                availableDaysCount = availCals.size,
+                nearestAvailableDate = availCals.firstOrNull()?.flightDate,
+                officialUpdatedAt = off?.updatedAt,
+                isCalendarSynced = routeCals.isNotEmpty(),
+                soldOutDaysCount = soldOutCnt,
+                hasOperatingDaysInCalendar = hasOperating
             )
         }
 

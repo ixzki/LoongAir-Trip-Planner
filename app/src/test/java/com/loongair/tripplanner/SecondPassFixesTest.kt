@@ -3,6 +3,7 @@ package com.loongair.tripplanner
 import com.loongair.tripplanner.data.local.FlightRouteEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
+import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
 import com.loongair.tripplanner.ui.account.isAllowedCaptchaUrl
@@ -11,6 +12,7 @@ import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
 import java.util.TimeZone
@@ -105,5 +107,47 @@ class SecondPassFixesTest {
         } finally {
             TimeZone.setDefault(prevTz)
         }
+    }
+
+    @Test
+    fun threeCharacterChineseCities_resolveToAsciiIataInsteadOfChineseText() {
+        // 回归验证：3 个汉字的城市名绝不可因 Char.isLetter() == true 被原样当成三字码返回
+        assertEquals("HRB", CityIataMapper.toApiIata("哈尔滨"))
+        assertEquals("DYG", CityIataMapper.toApiIata("张家界"))
+        assertEquals("AKU", CityIataMapper.toApiIata("阿克苏"))
+        assertEquals("AAT", CityIataMapper.toApiIata("阿勒泰"))
+        assertEquals("ACF", CityIataMapper.toApiIata("阿拉尔"))
+        assertEquals("SJW", CityIataMapper.toApiIata("石家庄"))
+        assertEquals("HLD", CityIataMapper.toApiIata("海拉尔"))
+        assertEquals("NBS", CityIataMapper.toApiIata("长白山"))
+        assertEquals("NBS", CityIataMapper.toApiIata("白山"))
+        assertEquals("BAR", CityIataMapper.toApiIata("博鳌"))
+        assertEquals("HRB", CityIataMapper.toApiIata("hrb"))
+        assertFalse(CityIataMapper.isAsciiIataCode("哈尔滨"))
+        assertTrue(CityIataMapper.isAsciiIataCode("HRB"))
+    }
+
+    @Test
+    fun dualPatternSampling_ignoresUnopenedMinusOneDatesAndPrioritizesAvailableStatus() {
+        val base = LocalDate.of(2026, 11, 25) // 周三
+        // 模拟一三五日航线（如杭州->东营）：近3天 (11-25..27) 与 30天外 (12-26 周六) 返回 -1 未开放，二四六返回 -4 无班
+        val calDongying = mapOf(
+            "2026-11-25" to -1,
+            "2026-11-26" to -1,
+            "2026-11-27" to -1,
+            "2026-11-28" to -4, // 周六无班
+            "2026-11-29" to 1,  // 周日可兑
+            "2026-11-30" to 0,  // 周一兑完
+            "2026-12-01" to -4, // 周二无班
+            "2026-12-02" to 1,  // 周三可兑
+            "2026-12-03" to -4, // 周四无班
+            "2026-12-04" to 0,  // 周五兑完
+            "2026-12-26" to -1  // 31天后周六未开放，绝不可误抽！
+        )
+        assertEquals("1357", RoundTripMatcher.deriveFrequencyFromCalendar(calDongying, base))
+        val (oddDate, evenDate) = RoundTripMatcher.pickDualPatternSampleDates(calDongying, base)
+        // 组内优先挑 status == 1（周三 12-02 或周日 11-29），绝不挑 status == 0 的周五 12-04；且二四六组为 null
+        assertEquals("2026-12-02", oddDate)
+        assertNull(evenDate)
     }
 }

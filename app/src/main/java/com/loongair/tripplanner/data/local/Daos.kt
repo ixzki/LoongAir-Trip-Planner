@@ -61,6 +61,9 @@ interface CalendarCacheDao {
     @Query("SELECT * FROM route_calendar WHERE status = 1 AND flightDate >= :minDate ORDER BY flightDate ASC")
     suspend fun getAllAvailable(minDate: String): List<CalendarCacheEntity>
 
+    @Query("SELECT * FROM route_calendar WHERE flightDate >= :minDate ORDER BY flightDate ASC")
+    suspend fun getAllFromDate(minDate: String): List<CalendarCacheEntity>
+
     @Query("SELECT * FROM route_calendar WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate >= :minDate ORDER BY flightDate ASC")
     suspend fun getAllForRoute(fromCity: String, toCity: String, minDate: String): List<CalendarCacheEntity>
 

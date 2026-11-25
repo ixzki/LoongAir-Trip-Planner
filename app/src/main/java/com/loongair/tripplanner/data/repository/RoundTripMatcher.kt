@@ -126,7 +126,9 @@ object RoundTripMatcher {
     }
 
     /**
-     * 从 60 天放票日历为每个有班次的星期几 (1=周一..7=周日) 各挑一个最佳样本日，用于 7 天精确校准逐航班执飞星期
+     * 从 60 天放票日历为每个有班次的星期几 (1=周一..7=周日) 各挑一个最佳样本日，用于采样校准逐航班执飞星期。
+     * 注意：长龙日历接口对「距今不足 3 天」及「30 天以外未开放窗口」统一返回 status = -1（无论当日是否有航班），
+     * 且对 status = -1 / -3 日期调用 secCardSearchFlights 会直接报错失败；因此仅采集已实际评估排班的 status == 1 或 0！
      */
     fun pickWeeklySampleDates(
         calMap: Map<String, Int>,
@@ -134,7 +136,7 @@ object RoundTripMatcher {
     ): Map<Int, String> {
         val parsed = calMap.entries
             .mapNotNull { (k, v) ->
-                if (v == -4 || v == -2) return@mapNotNull null
+                if (v != 1 && v != 0) return@mapNotNull null
                 val d = runCatching { LocalDate.parse(k) }.getOrNull() ?: return@mapNotNull null
                 if (d.isBefore(baseDate)) null else Triple(d, k, v)
             }
@@ -149,8 +151,6 @@ object RoundTripMatcher {
             val pool = in30.ifEmpty { allForDow }
             val best = pool.firstOrNull { it.third == 1 }?.second
                 ?: pool.firstOrNull { it.third == 0 }?.second
-                ?: pool.firstOrNull { it.third == -3 }?.second
-                ?: pool.firstOrNull { it.third == -1 }?.second
                 ?: pool.first().second
             result[dow] = best
         }
@@ -158,15 +158,21 @@ object RoundTripMatcher {
     }
 
     /**
-     * 快速双模式采样：从「一三五日」与「二四六」两组中各挑 1 个最佳样本日，用于初始同步时快速区分隔日班次
+     * 快速双模式采样：从「一三五日」与「二四六」两组中各挑 1 个最佳样本日，用于初始同步时快速区分隔日班次。
+     * 注意：长龙 secCardSearchFlights 接口在当日名额已兑完 (status == 0) 时可能返回空列表，
+     * 因此组内必须优先挑选 status == 1（有余票可兑）的星期样本，避免明明有可兑日却误抽中已兑完日导致班次为空。
      */
     fun pickDualPatternSampleDates(
         calMap: Map<String, Int>,
         baseDate: LocalDate = ChinaClock.today()
     ): Pair<String?, String?> {
         val byDow = pickWeeklySampleDates(calMap, baseDate)
-        val oddDate = listOf(5, 1, 3, 7).firstNotNullOfOrNull { byDow[it] }
-        val evenDate = listOf(6, 2, 4).firstNotNullOfOrNull { byDow[it] }
+        val oddOrder = listOf(5, 1, 3, 7)
+        val evenOrder = listOf(6, 2, 4)
+        val oddDate = oddOrder.firstNotNullOfOrNull { dow -> byDow[dow]?.takeIf { calMap[it] == 1 } }
+            ?: oddOrder.firstNotNullOfOrNull { byDow[it] }
+        val evenDate = evenOrder.firstNotNullOfOrNull { dow -> byDow[dow]?.takeIf { calMap[it] == 1 } }
+            ?: evenOrder.firstNotNullOfOrNull { byDow[it] }
         return oddDate to evenDate
     }
 
@@ -195,18 +201,18 @@ object RoundTripMatcher {
     }
 
     /**
-     * 从长龙 60 天放票日历反推真实每周执飞班期（例如 "1234567" / "1357" / "246"）
-     * status = -4 表示当日无航班；其余状态 (1可兑 / 0兑完 / -1未开放 / -3已截止) 均表示该星期执飞。
+     * 从长龙 60 天放票日历反推真实每周执飞班期（例如 "1234567" / "1357" / "246"）。
+     * 仅统计已开放评估窗口内的可兑 (1) 与已兑完 (0)：因为近 3 天截止期与 30 天外未开放期均固定返回 -1，不代表当日有航班。
      */
     fun deriveFrequencyFromCalendar(
         calMap: Map<String, Int>,
         baseDate: LocalDate = ChinaClock.today()
     ): String {
         if (calMap.isEmpty()) return ""
-        val maxDate = baseDate.plusDays(28)
+        val maxDate = baseDate.plusDays(32)
         val operatingDows = sortedSetOf<Int>()
         for ((dateStr, status) in calMap) {
-            if (status == -4 || status == -2) continue
+            if (status != 1 && status != 0) continue
             val d = runCatching { LocalDate.parse(dateStr) }.getOrNull() ?: continue
             if (!d.isBefore(baseDate) && !d.isAfter(maxDate)) {
                 operatingDows.add(d.dayOfWeek.value)
@@ -217,7 +223,7 @@ object RoundTripMatcher {
 
     /**
      * 从 60 天放票日历挑选最适合调用 secCardSearchFlights 拉取实时班次时刻的样本日期：
-     * 优先选 3~30 天内可兑 (1)，其次已兑完 (0)，其次近3天 (-3)，再其次未开放 (-1)。
+     * 仅选开放兑换窗口内的可兑 (1) 或已兑完 (0)，避免对未开放 (-1) 日期发起必定报错的请求。
      */
     fun pickBestSampleDate(
         calMap: Map<String, Int>,
@@ -225,6 +231,7 @@ object RoundTripMatcher {
     ): String? {
         val entries = calMap.entries
             .mapNotNull { (k, v) ->
+                if (v != 1 && v != 0) return@mapNotNull null
                 val d = runCatching { LocalDate.parse(k) }.getOrNull() ?: return@mapNotNull null
                 if (d.isBefore(baseDate)) null else Triple(d, k, v)
             }
@@ -234,9 +241,6 @@ object RoundTripMatcher {
         val pool = inWindow.ifEmpty { entries }
         return pool.firstOrNull { it.third == 1 }?.second
             ?: pool.firstOrNull { it.third == 0 }?.second
-            ?: pool.firstOrNull { it.third == -3 }?.second
-            ?: pool.firstOrNull { it.third == -1 }?.second
-            ?: pool.firstOrNull { it.third != -4 && it.third != -2 }?.second
     }
 
     fun matchesDayOfWeek(frequency: String, date: LocalDate): Boolean {

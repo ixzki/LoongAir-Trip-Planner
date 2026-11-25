@@ -880,8 +880,15 @@ private fun NetworkRouteDetailCard(
                 }
             }
         } else {
+            val emptyHint = when {
+                !route.isCalendarSynced -> "官方已开通此航线 · 点击加载放票日历与航班时刻"
+                route.availableDaysCount > 0 -> "官方已开通此航线 · 点击自动补全具体航班时刻与班期"
+                route.soldOutDaysCount > 0 -> "官方已开通此航线 · 近期已放票日期均已兑完（点击查看日历）"
+                !route.hasOperatingDaysInCalendar -> "官方已开通此航线 · 当前航季暂无执飞排班"
+                else -> "官方已开通此航线 · 近期暂未开放兑换（点击查看日历）"
+            }
             Text(
-                "官方畅飞卡已开通此航线（可在「往返」页按日期查实时班次与余票）",
+                emptyHint,
                 style = LoongType.footnote,
                 color = p.textSecondary
             )
