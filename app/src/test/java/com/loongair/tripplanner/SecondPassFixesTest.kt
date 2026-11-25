@@ -6,8 +6,11 @@ import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.remote.BundledChangfeiNetwork
 import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
+import com.loongair.tripplanner.data.repository.NetworkRouteSummary
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
+import com.loongair.tripplanner.ui.NetworkUiState
 import com.loongair.tripplanner.ui.account.isAllowedCaptchaUrl
+import com.loongair.tripplanner.ui.rankOriginCitiesByConnectivity
 import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
@@ -266,6 +269,64 @@ class SecondPassFixesTest {
             assertFalse("Obfuscated flightNo: ${f.flightNo}", f.flightNo.contains("&"))
             assertTrue("Flight frequency must be non-empty: ${f.flightNo}", f.frequency.any { it in '1'..'7' })
         }
+    }
+
+    @Test
+    fun networkRankingAndHomeCityPriority_ordersHubsByRouteCountAndFloatsHomeCityRoutesFirst() {
+        fun mkSummary(from: String, to: String, avail: Int) = NetworkRouteSummary(
+            fromCity = from,
+            fromAirport = "${from}机场",
+            fromIata = CityIataMapper.toApiIata(from),
+            toCity = to,
+            toAirport = "${to}机场",
+            toIata = CityIataMapper.toApiIata(to),
+            flights = emptyList(),
+            isOfficialSynced = true,
+            availableDaysCount = avail,
+            nearestAvailableDate = null,
+            officialUpdatedAt = null
+        )
+
+        val routes = listOf(
+            // 乌鲁木齐->银川 有最高可兑天数，但通航数只有 1
+            mkSummary("乌鲁木齐", "银川", avail = 28),
+            // 杭州通航 3 城，可兑天数较少
+            mkSummary("杭州", "成都天府", avail = 5),
+            mkSummary("杭州", "长春", avail = 12),
+            mkSummary("杭州", "三亚", avail = 3),
+            // 长春通航 2 城
+            mkSummary("长春", "杭州", avail = 10),
+            mkSummary("长春", "广州", avail = 6),
+            // 三亚通航 1 城，排序不能仅靠汉字 Unicode ("三" < "杭")
+            mkSummary("三亚", "杭州", avail = 1)
+        )
+
+        val rankedHubs = rankOriginCitiesByConnectivity(routes)
+        assertEquals(listOf("杭州", "长春", "乌鲁木齐", "三亚"), rankedHubs)
+
+        val stateHangzhou = NetworkUiState(
+            allRoutes = routes,
+            allOriginCities = rankedHubs,
+            homeCity = "杭州"
+        ).withRecomputedFilter()
+
+        val orderedPairs = stateHangzhou.filteredRoutes.map { "${it.fromCity}->${it.toCity}" }
+        assertEquals(
+            listOf(
+                "杭州->长春",     // tier 0: 常驻出发，availableDays=12
+                "杭州->成都天府", // tier 0: availableDays=5
+                "杭州->三亚",     // tier 0: availableDays=3
+                "长春->杭州",     // tier 1: 飞往常驻城，availableDays=10
+                "三亚->杭州",     // tier 1: 飞往常驻城，availableDays=1
+                "乌鲁木齐->银川", // tier 2: 其他航线，availableDays=28
+                "长春->广州"      // tier 2: availableDays=6
+            ),
+            orderedPairs
+        )
+
+        // 切换常驻城市后立即重排
+        val stateChangchun = stateHangzhou.copy(homeCity = "长春").withRecomputedFilter()
+        assertEquals("长春", stateChangchun.filteredRoutes.first().fromCity)
     }
 
     companion object {

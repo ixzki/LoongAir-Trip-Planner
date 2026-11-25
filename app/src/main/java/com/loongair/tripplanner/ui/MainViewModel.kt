@@ -137,7 +137,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             else -> homeCity
         }
         val dests = repo.getDestinationsFrom(effectiveOrigin)
-        val allNetworkOrigins = allNetwork.map { it.fromCity }.distinct().sorted()
+        val allNetworkOrigins = rankOriginCitiesByConnectivity(allNetwork)
         val allNetworkDests = allNetwork.map { it.toCity }.distinct().sorted()
         val lastSyncAt = officialRoutes.filter { it.dataSource != ROUTE_SOURCE_BUNDLED }.maxOfOrNull { it.updatedAt }
         val bundledCnt = officialRoutes.count { it.dataSource == ROUTE_SOURCE_BUNDLED }
@@ -161,6 +161,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 allDestCities = allNetworkDests,
                 fromCityFilter = if (st.fromCityFilter in allNetworkOrigins) st.fromCityFilter else "",
                 toCityFilter = if (st.toCityFilter in allNetworkDests) st.toCityFilter else "",
+                homeCity = homeCity,
                 officialSyncedCount = officialRoutes.size,
                 bundledRouteCount = bundledCnt,
                 invalidatedRouteCount = invalidatedRoutes.size,
@@ -199,7 +200,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } else {
                 st.allRoutes + updated
             }
-            st.copy(allRoutes = nextList).withRecomputedFilter()
+            st.copy(
+                allRoutes = nextList,
+                allOriginCities = rankOriginCitiesByConnectivity(nextList)
+            ).withRecomputedFilter()
         }
         if (triggerSearchIfRelevant) {
             val curOrigin = _searchState.value.originCity
@@ -512,6 +516,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun setHomeCity(city: String) {
         repo.authPrefs.setHomeCity(city)
         setOriginCity(city)
+        _networkState.update { it.copy(homeCity = city).withRecomputedFilter() }
         showMessage("已将常驻出发城市设为「$city」")
     }
 

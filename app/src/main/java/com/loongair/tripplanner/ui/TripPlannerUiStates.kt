@@ -23,6 +23,7 @@ data class NetworkUiState(
     val fromCityFilter: String = "",
     val toCityFilter: String = "",
     val onlyOfficialSynced: Boolean = false,
+    val homeCity: String = "",
     val provinces: List<ChinaProvincePath> = emptyList(),
     val cityMetaList: List<CityMeta> = emptyList(),
     val allOriginCities: List<String> = emptyList(),
@@ -45,10 +46,11 @@ data class NetworkUiState(
         get() = allRoutes.isNotEmpty() || officialSyncedCount > 0
 
     /**
-     * 在状态更新时一次性预计算 filteredRoutes，避免在 Compose 树每次重组读取时重复遍历过滤列表。
+     * 在状态更新时一次性预计算 filteredRoutes（优先展示常驻城市出发/到达的航线），
+     * 避免在 Compose 树每次重组读取时重复遍历过滤列表。
      */
     fun withRecomputedFilter(): NetworkUiState {
-        val computed = if (fromCityFilter.isBlank() && toCityFilter.isBlank() && !onlyOfficialSynced) {
+        val filtered = if (fromCityFilter.isBlank() && toCityFilter.isBlank() && !onlyOfficialSynced) {
             allRoutes
         } else {
             allRoutes.filter { r ->
@@ -57,8 +59,37 @@ data class NetworkUiState(
                     (!onlyOfficialSynced || r.isOfficialSynced)
             }
         }
-        return copy(filteredRoutes = computed)
+        val sorted = filtered.sortedWith(
+            compareBy<NetworkRouteSummary> { r ->
+                when {
+                    homeCity.isNotBlank() && r.fromCity == homeCity -> 0
+                    homeCity.isNotBlank() && r.toCity == homeCity -> 1
+                    else -> 2
+                }
+            }
+                .thenByDescending { it.availableDaysCount }
+                .thenByDescending { it.flights.size }
+                .thenBy { it.fromCity }
+                .thenBy { it.toCity }
+        )
+        return copy(filteredRoutes = sorted)
     }
+}
+
+/**
+ * 按通航目的地数量（及有效可兑天数、班次密度）从高到低排序出发枢纽城市。
+ */
+fun rankOriginCitiesByConnectivity(routes: List<NetworkRouteSummary>): List<String> {
+    if (routes.isEmpty()) return emptyList()
+    val byOrigin = routes.groupBy { it.fromCity }
+    return byOrigin.keys.sortedWith(
+        compareByDescending<String> { city ->
+            byOrigin[city].orEmpty().mapTo(HashSet()) { it.toCity }.size
+        }
+            .thenByDescending { city -> byOrigin[city].orEmpty().sumOf { it.availableDaysCount } }
+            .thenByDescending { city -> byOrigin[city].orEmpty().sumOf { it.flights.size } }
+            .thenBy { it }
+    )
 }
 
 data class RouteCalendarDetailUiState(
