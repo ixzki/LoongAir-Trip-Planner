@@ -30,6 +30,15 @@ android {
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
 
+    applicationVariants.configureEach {
+        val buildTypeName = buildType.name
+        val verName = versionName
+        outputs.configureEach {
+            val out = this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl
+            out?.outputFileName = "ChangfeiXing-v${verName}-${buildTypeName}.apk"
+        }
+    }
+
     signingConfigs {
         val ksPath = propOrEnv("LOONGAIR_KEYSTORE_PATH")
         if (ksPath != null && file(ksPath).exists()) {
