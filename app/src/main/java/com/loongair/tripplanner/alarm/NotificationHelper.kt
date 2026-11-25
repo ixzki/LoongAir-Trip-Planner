@@ -33,7 +33,7 @@ object NotificationHelper {
             "畅飞卡抢票提醒",
             NotificationManager.IMPORTANCE_HIGH
         ).apply {
-            description = "长龙航空畅飞卡行程放票开抢与兑换截止精确提醒"
+            description = "畅飞卡行程放票开抢与兑换截止精确提醒"
             enableVibration(true)
             vibrationPattern = longArrayOf(0, 400, 200, 400)
             enableLights(true)
@@ -61,7 +61,7 @@ object NotificationHelper {
             .replace("⚠", "")
             .replace("🔎", "")
             .trim()
-            .ifBlank { "长龙畅飞卡提醒" }
+            .ifBlank { "畅飞卡提醒" }
     }
 
     fun resolveBadgeLabel(cleanTitle: String): String = when {

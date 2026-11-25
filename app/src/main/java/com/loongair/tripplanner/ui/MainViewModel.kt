@@ -254,7 +254,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshNetworkRouteCalendar(fromCity: String, toCity: String) {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页面登录长龙会员后再刷新放票日历")
+            showMessage("请先在「我的」页面登录账号后再刷新放票日历")
             return
         }
         val key = "$fromCity|$toCity"
@@ -340,7 +340,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun refreshOpenedRouteCalendar() {
         val currentRoute = _routeDetailState.value.route ?: return
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再刷新放票日历")
+            showMessage("请先在「我的」页登录账号后再刷新放票日历")
             return
         }
         viewModelScope.launch {
@@ -407,14 +407,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (autoQuerySeats && sessionState.value.isLoggedIn && !hasCached) {
             queryRouteDetailSeats(dateStr)
         } else if (autoQuerySeats && !sessionState.value.isLoggedIn && !hasCached) {
-            showMessage("登录长龙会员后点击日期即可实时查询具体航班余票")
+            showMessage("登录账号后点击日期即可实时查询具体航班余票")
         }
     }
 
     fun queryRouteDetailSeats(dateStr: String) {
         val currentRoute = _routeDetailState.value.route ?: return
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再查实时余票")
+            showMessage("请先在「我的」页登录账号后再查实时余票")
             return
         }
         viewModelScope.launch {
@@ -455,7 +455,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     fun calibrateOpenedRouteWeeklySchedule() {
         val currentRoute = _routeDetailState.value.route ?: return
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再校准每周真实班期")
+            showMessage("请先在「我的」页登录账号后再校准每周真实班期")
             return
         }
         if (calibrateJob?.isActive == true || _routeDetailState.value.isCalibratingSchedule) return
@@ -681,7 +681,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun verifyCandidateLiveSeats(candidate: RoundTripCandidate) {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再查实时余票")
+            showMessage("请先在「我的」页登录账号后再查实时余票")
             return
         }
         val candKey = "${candidate.destinationCity}|${candidate.outboundDate}|${candidate.returnDate}"
@@ -710,7 +710,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun startBatchCalendarVerify() {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再批量核验放票日历")
+            showMessage("请先在「我的」页登录账号后再批量核验放票日历")
             return
         }
         if (batchJob?.isActive == true) return
@@ -810,7 +810,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun recheckPlanLiveSeats(plan: TripPlanEntity) {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再核验余票")
+            showMessage("请先在「我的」页登录账号后再核验余票")
             return
         }
         viewModelScope.launch {
@@ -909,7 +909,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             context = app,
             reminderId = 999999L,
             planId = plans.value.firstOrNull()?.id ?: -1L,
-            title = "长龙畅飞卡测试提醒",
+            title = "畅飞卡测试提醒",
             message = "通知权限已就绪，抢票闹钟到点时会以同款高优先级卡片提醒你。"
         )
         showMessage("已发送一条测试通知，请查看手机顶部状态栏")
@@ -938,7 +938,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun refreshOfficialDepartureAirports(silent: Boolean = false) {
         if (!sessionState.value.isLoggedIn) {
-            if (!silent) showMessage("请先登录长龙会员后再获取官方出发城市")
+            if (!silent) showMessage("请先登录账号后再获取官方出发城市")
             return
         }
         viewModelScope.launch {
@@ -949,7 +949,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 _officialAirports.value = all
                 if (!silent) {
                     if (list.isNotEmpty()) {
-                        showMessage("已获取 ${list.size} 座长龙官方出发城市")
+                        showMessage("已获取 ${list.size} 座官方出发城市")
                     } else {
                         showMessage("未拉取到出发城市目录，可直接手动输入城市名或机场三字码同步")
                     }
@@ -1020,7 +1020,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun syncSingleCityAllRoutes(rawCityOrCode: String) {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先登录长龙会员后再同步城市航线")
+            showMessage("请先登录账号后再同步城市航线")
             return
         }
         val clean = rawCityOrCode.trim()
@@ -1118,7 +1118,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun checkOfficialDestinationsForHome() {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先登录长龙会员后再同步官方航线")
+            showMessage("请先登录账号后再同步官方航线")
             return
         }
         val origin = sessionState.value.homeCity.ifBlank { _searchState.value.originCity.ifBlank { "杭州" } }
@@ -1130,7 +1130,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun syncOfficialNetworkHubs() {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先登录长龙会员后再同步全网航线")
+            showMessage("请先登录账号后再同步全网航线")
             return
         }
         if (officialSyncJob?.isActive == true) return
@@ -1195,7 +1195,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
      */
     fun refreshAllSoldOutRoutes() {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先在「我的」页登录长龙会员后再巡检约满航线")
+            showMessage("请先在「我的」页登录账号后再巡检约满航线")
             return
         }
         if (officialSyncJob?.isActive == true) {

@@ -200,7 +200,7 @@ internal fun CardsSubPage(
                         if (cardSyncLoading) {
                             CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = Color.White)
                             Spacer(Modifier.width(8.dp))
-                            Text("正在从长龙同步卡包...", style = LoongType.filter)
+                            Text("正在同步卡包...", style = LoongType.filter)
                         } else {
                             Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
                             Spacer(Modifier.width(6.dp))
@@ -279,7 +279,7 @@ internal fun CardsSubPage(
                         }
                     } else if (!session.isLoggedIn) {
                         Spacer(Modifier.height(10.dp))
-                        Text("请先返回「我的」登录长龙会员后再同步名下畅飞卡。", style = LoongType.footnote, color = p.textSecondary)
+                        Text("请先返回「我的」登录账号后再同步名下畅飞卡。", style = LoongType.footnote, color = p.textSecondary)
                     }
                 }
             }

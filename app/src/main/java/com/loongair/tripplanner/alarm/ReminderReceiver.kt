@@ -12,7 +12,7 @@ class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val reminderId = intent.getLongExtra(NotificationHelper.EXTRA_REMINDER_ID, -1L)
         val planId = intent.getLongExtra(NotificationHelper.EXTRA_PLAN_ID, -1L)
-        val title = intent.getStringExtra(NotificationHelper.EXTRA_TITLE) ?: "长龙畅飞卡抢票提醒"
+        val title = intent.getStringExtra(NotificationHelper.EXTRA_TITLE) ?: "畅飞卡抢票提醒"
         val message = intent.getStringExtra(NotificationHelper.EXTRA_MESSAGE) ?: "你安排的畅飞卡行程到了抢票提醒时间，快去查余票吧！"
 
         NotificationHelper.showReminderNotification(

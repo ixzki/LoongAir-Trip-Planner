@@ -876,7 +876,7 @@ private fun exportPlanToSystemCalendar(context: Context, plan: TripPlanEntity) {
         data = CalendarContract.Events.CONTENT_URI
         putExtra(CalendarContract.EXTRA_EVENT_BEGIN_TIME, startMillis)
         putExtra(CalendarContract.EXTRA_EVENT_END_TIME, startMillis + 15 * 60 * 1000L)
-        putExtra(CalendarContract.Events.TITLE, "抢长龙畅飞卡：${plan.fromCity} ⇄ ${plan.toCity}")
+        putExtra(CalendarContract.Events.TITLE, "抢畅飞卡：${plan.fromCity} ⇄ ${plan.toCity}")
         putExtra(
             CalendarContract.Events.DESCRIPTION,
             "去程：${plan.outboundDate} ${plan.outboundFlightNo} (${plan.outboundDepTime}-${plan.outboundArrTime})\n" +

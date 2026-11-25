@@ -182,20 +182,6 @@ fun FullScreenLaunchSplash(
                 }
             }
     ) {
-        // 背景淡水印（置于顶部留白处，不遮挡中心徽章）
-        Text(
-            text = "LOONG",
-            fontSize = 112.sp,
-            fontWeight = FontWeight.ExtraBold,
-            letterSpacing = (-5).sp,
-            color = if (isMist) p.primary.copy(alpha = 0.04f) else Color(0x09FFF8F5),
-            maxLines = 1,
-            softWrap = false,
-            modifier = Modifier
-                .align(Alignment.TopCenter)
-                .padding(top = 72.dp)
-        )
-
         // 中部：航线轨迹徽章 + 品牌标题
         Column(
             modifier = Modifier

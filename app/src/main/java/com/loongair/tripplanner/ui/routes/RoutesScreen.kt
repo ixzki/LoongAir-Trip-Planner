@@ -138,7 +138,7 @@ fun RoutesScreen(
     if (!state.isLoading && !state.hasSyncedData) {
         FirstRunOnboardingGate(
             screenTitle = "航线",
-            screenWatermark = "LOONG",
+            screenWatermark = "ROUTE",
             featureHint = "无预置数据，同步一座城市后解锁航网",
             session = session,
             officialAirports = officialAirports,
@@ -227,7 +227,7 @@ fun RoutesScreen(
                     HeroHeaderOverlapContainer(
                         subtitle = todayChineseHeaderDate(),
                         title = "航线",
-                        watermark = "LOONG",
+                        watermark = "ROUTE",
                         collapseProgress = collapseProgress,
                         trailingAction = {
                             HeroCircleActionButton(

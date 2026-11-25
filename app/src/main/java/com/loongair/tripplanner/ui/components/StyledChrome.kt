@@ -336,7 +336,7 @@ fun LacquerPullRefreshBox(
             content = content
         )
 
-        // 下拉露出的「LOONG」手绘字标刷新动效（参考 chher-public ChhersLoader）
+        // 下拉露出的航迹客机手绘刷新动效（逐笔描出起点、弧线航迹与爬升客机）
         if (pullPx > 1f) {
             val loaderColor = when {
                 !isMist -> p.heroText
@@ -353,7 +353,7 @@ fun LacquerPullRefreshBox(
                     .graphicsLayer { alpha = loaderAlpha },
                 contentAlignment = Alignment.Center
             ) {
-                LoongWordmarkLoader(
+                FlightArcRefreshLoader(
                     isRefreshing = isRefreshing,
                     pullProgress = pullProgress,
                     color = loaderColor
@@ -364,31 +364,30 @@ fun LacquerPullRefreshBox(
 }
 
 /**
- * 复刻 chher-public ChhersLoader 逐笔手绘字标动效（LOONG 极简圆头几何笔划）：
- * - 下拉阶段：随拉距 0..1 连续逐笔描出「LOONG」五字母
- * - 刷新阶段：流畅循环书写 + 呼吸淡出（1350ms 周期）
+ * 畅飞行下拉刷新手绘动效：
+ * - 下拉阶段：随拉距 0..1 连续逐笔描出坐标点、弧线航迹与爬升机翼
+ * - 刷新阶段：流畅循环书写 + 呼吸淡出
  */
 @Composable
-private fun LoongWordmarkLoader(
+private fun FlightArcRefreshLoader(
     isRefreshing: Boolean,
     pullProgress: Float,
     color: Color
 ) {
-    val strokes = remember { buildLoongWordmarkStrokes() }
+    val strokes = remember { buildFlightArcLoaderStrokes() }
     val totalLength = remember(strokes) { strokes.sumOf { it.length.toDouble() }.toFloat().coerceAtLeast(1f) }
 
-    val transition = rememberInfiniteTransition(label = "loongLoaderLoop")
+    val transition = rememberInfiniteTransition(label = "flightArcLoaderLoop")
     val loopPhase by transition.animateFloat(
         initialValue = 0f,
         targetValue = 1f,
         animationSpec = infiniteRepeatable(
-            animation = tween(durationMillis = 720, easing = LinearEasing),
+            animation = tween(durationMillis = 760, easing = LinearEasing),
             repeatMode = RepeatMode.Restart
         ),
-        label = "loongLoopPhase"
+        label = "flightArcLoopPhase"
     )
 
-    // 刷新循环中：0..0.72 轻快写完，0.72..0.86 短暂停留，0.86..1.0 淡出
     val cycleAlpha = if (!isRefreshing) {
         (0.28f + 0.72f * pullProgress).coerceIn(0f, 1f)
     } else {
@@ -410,7 +409,7 @@ private fun LoongWordmarkLoader(
     Canvas(
         modifier = Modifier
             .width(104.dp)
-            .height(22.dp)
+            .height(24.dp)
             .graphicsLayer { alpha = cycleAlpha }
     ) {
         val viewW = 114f
@@ -418,7 +417,7 @@ private fun LoongWordmarkLoader(
         val scale = minOf(size.width / viewW, size.height / viewH)
         val dx = (size.width - viewW * scale) / 2f
         val dy = (size.height - viewH * scale) / 2f
-        val strokeW = 2.35.dp.toPx() / scale
+        val strokeW = 2.3.dp.toPx() / scale
 
         val targetLen = drawProgress * totalLength
         var drawn = 0f
@@ -454,39 +453,28 @@ private data class WordmarkStroke(
     val length: Float
 )
 
-private fun buildLoongWordmarkStrokes(): List<WordmarkStroke> {
-    // 114 × 26 坐标空间内的精致圆头几何「LOONG」五笔划
+private fun buildFlightArcLoaderStrokes(): List<WordmarkStroke> {
+    // 114 × 26 坐标空间：起点坐标圆 + 轻盈起伏航迹弧线 + 爬升简笔客机
     val rawPaths = listOf(
-        // L
+        // 1. 起点定位圈
         Path().apply {
-            moveTo(4f, 3f)
-            lineTo(4f, 22f)
-            lineTo(17f, 22f)
+            addOval(Rect(left = 10f, top = 14f, right = 18f, bottom = 22f))
         },
-        // O (1)
+        // 2. 起伏飞行轨迹线
         Path().apply {
-            addOval(Rect(left = 23f, top = 5f, right = 40f, bottom = 22f))
+            moveTo(20f, 18f)
+            cubicTo(38f, 6f, 54f, 22f, 76f, 11f)
         },
-        // O (2)
+        // 3. 机翼外缘 V 形爬升线
         Path().apply {
-            addOval(Rect(left = 47f, top = 5f, right = 64f, bottom = 22f))
+            moveTo(79f, 10f)
+            lineTo(99f, 6f)
+            lineTo(88f, 21f)
         },
-        // N
+        // 4. 机身中轴尾迹
         Path().apply {
-            moveTo(71f, 22f)
-            lineTo(71f, 5f)
-            lineTo(86f, 22f)
-            lineTo(86f, 5f)
-        },
-        // G（逆时针描完外圆至 3 点钟方向后水平向内收笔）
-        Path().apply {
-            arcTo(
-                rect = Rect(left = 93f, top = 5f, right = 110f, bottom = 22f),
-                startAngleDegrees = -42f,
-                sweepAngleDegrees = -318f,
-                forceMoveTo = true
-            )
-            lineTo(101f, 13.5f)
+            moveTo(85f, 13f)
+            lineTo(99f, 6f)
         }
     )
     return rawPaths.map { path ->
@@ -504,7 +492,7 @@ private fun buildLoongWordmarkStrokes(): List<WordmarkStroke> {
 fun HeroHeaderOverlapContainer(
     subtitle: String,
     title: String,
-    watermark: String = "LOONG",
+    watermark: String = "FLY",
     collapseProgress: Float = 0f,
     trailingAction: (@Composable BoxScope.() -> Unit)? = null,
     heroExtraContent: (@Composable ColumnScope.() -> Unit)? = null,

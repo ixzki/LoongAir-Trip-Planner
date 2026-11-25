@@ -158,7 +158,7 @@ fun FirstRunOnboardingGate(
                         ) {
                             OnboardingStepRow(
                                 stepNumber = 1,
-                                title = "登录长龙会员",
+                                title = "登录账号",
                                 subtitle = if (isLoggedIn) "${session.userName} · ${session.cardName}" else "",
                                 completed = isLoggedIn,
                                 active = !isLoggedIn
@@ -370,7 +370,7 @@ fun FirstCitySyncPanel(
                 horizontalArrangement = Arrangement.spacedBy(8.dp)
             ) {
                 CircularProgressIndicator(modifier = Modifier.size(14.dp), strokeWidth = 2.dp, color = p.primary)
-                Text("正在获取长龙官方国内城市目录...", style = LoongType.footnote, color = p.textSecondary)
+                Text("正在获取官方国内城市目录...", style = LoongType.footnote, color = p.textSecondary)
             }
         } else if (filteredAirports.isNotEmpty()) {
             Row(

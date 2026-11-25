@@ -496,7 +496,7 @@ fun AccountScreen(viewModel: MainViewModel) {
 
                         else -> {
                             Text(
-                                "以下航线经长龙官方接口确认已下线、停航无班或超出当前畅飞卡适用范围，已从本地与内置基准库自动剔除。",
+                                "以下航线经官方接口确认已下线、停航无班或超出当前畅飞卡适用范围，已从本地与内置基准库自动剔除。",
                                 style = LoongType.caption,
                                 color = p.textSecondary
                             )
@@ -840,7 +840,7 @@ private fun ProfileMainPage(
                                             }
                                             Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
                                                 Text(
-                                                    text = if (session.isLoggedIn) session.userName else "未登录长龙会员",
+                                                    text = if (session.isLoggedIn) session.userName else "未登录账号",
                                                     style = LoongType.title2.copy(fontSize = 21.sp),
                                                     color = p.textPrimary,
                                                     maxLines = 1,
@@ -897,7 +897,7 @@ private fun ProfileMainPage(
                     HeroHeaderOverlapContainer(
                         subtitle = "",
                         title = "我的",
-                        watermark = "LOONG",
+                        watermark = "MINE",
                         collapseProgress = collapseProgress,
                         heroExtraContent = {
                             Row(
@@ -936,7 +936,7 @@ private fun ProfileMainPage(
 
                                     Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
                                         Text(
-                                            text = if (session.isLoggedIn) session.userName else "未登录长龙会员",
+                                            text = if (session.isLoggedIn) session.userName else "未登录账号",
                                             style = LoongType.title1,
                                             color = p.heroText,
                                             maxLines = 1,
@@ -1013,7 +1013,7 @@ private fun ProfileMainPage(
                             onOpenYidun = onOpenYidun,
                             onSubmitLogin = onSubmitLogin,
                             floating = false,
-                            firstRunHint = "凭据仅保存在本机，直连长龙官方网关，重新登录后可继续刷新实时余票与航线。"
+                            firstRunHint = "凭据仅保存在本机，直连官方网关，重新登录后可继续刷新实时余票与航线。"
                         )
                     }
                 }
@@ -1050,22 +1050,7 @@ private fun ProfileMainPage(
                     }
                 }
             }
-
-            // 底部预留落款安全区（对应 MeTokens.colophonClearance）
-            item {
-                Spacer(Modifier.height(52.dp))
-            }
         }
-
-        // 底部固定极简落款（复刻 chher-public me_page.dart Positioned bottom: 28）
-        Text(
-            text = "LOONG TRIP",
-            style = LoongType.caption.copy(letterSpacing = 3.2.sp),
-            color = p.textTertiary.copy(alpha = 0.55f),
-            modifier = Modifier
-                .align(Alignment.BottomCenter)
-                .padding(bottom = 26.dp)
-        )
 
         CompactScrollTopBar(
             title = if (session.isLoggedIn) session.userName else "我的",
@@ -1090,7 +1075,7 @@ private fun LoginFloatingCard(
     val p = LocalLoongPalette.current
     SoftCard(cornerRadius = AppRadii.card, floating = floating, contentPadding = 16.dp) {
         Text(
-            "长龙会员 · 手机验证码直登",
+            "手机验证码直登",
             style = LoongType.headline,
             color = p.textPrimary
         )
@@ -1105,7 +1090,7 @@ private fun LoginFloatingCard(
         OutlinedTextField(
             value = mobile,
             onValueChange = { if (it.length <= 11) onMobileChange(it.filter(Char::isDigit)) },
-            label = { Text("11 位长龙会员手机号") },
+            label = { Text("11 位绑定手机号") },
             keyboardOptions = KeyboardOptions(keyboardType = KeyboardType.Phone),
             singleLine = true,
             shape = RoundedCornerShape(14.dp),
