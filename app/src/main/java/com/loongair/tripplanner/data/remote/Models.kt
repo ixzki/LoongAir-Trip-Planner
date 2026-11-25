@@ -88,3 +88,59 @@ data class CitySyncSummary(
     val hasPartialFailure: Boolean
         get() = failedCalendarCount > 0 || failedScheduleCount > 0
 }
+
+data class FullNetworkSyncSummary(
+    val queriedAirports: Int,
+    val totalOfficialRoutes: Int,
+    val routesWithSchedules: Int,
+    val failedCount: Int,
+    val prunedInvalidCount: Int = 0
+)
+
+class RouteInvalidatedException(
+    val fromCity: String,
+    val toCity: String,
+    val reason: String
+) : IllegalStateException("检测到「$fromCity → $toCity」已失效（$reason），已自动移除")
+
+@Serializable
+data class BundledChangfeiNetwork(
+    val version: Int = 0,
+    val generatedAt: String = "",
+    val airports: List<BundledAirportItem> = emptyList(),
+    val routes: List<BundledRouteItem> = emptyList(),
+    val flights: List<BundledFlightItem> = emptyList()
+)
+
+@Serializable
+data class BundledAirportItem(
+    val cityName: String,
+    val airportName: String,
+    val airportCode: String,
+    val pinyin: String = ""
+)
+
+@Serializable
+data class BundledRouteItem(
+    val fromCity: String,
+    val fromAirport: String,
+    val fromIata: String,
+    val toCity: String,
+    val toAirport: String,
+    val toIata: String
+)
+
+@Serializable
+data class BundledFlightItem(
+    val fromCity: String,
+    val toCity: String,
+    val fromIata: String,
+    val toIata: String,
+    val flightNo: String,
+    val depTime: String,
+    val arrTime: String,
+    val duration: String = "",
+    val aircraft: String = "A320",
+    val frequency: String = "",
+    val stopover: String = "直飞"
+)

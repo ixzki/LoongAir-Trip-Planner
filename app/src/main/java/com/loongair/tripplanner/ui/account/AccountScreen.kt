@@ -251,6 +251,7 @@ fun AccountScreen(viewModel: MainViewModel) {
                     syncTotalCount = networkState.syncTotalCount,
                     officialSyncProgress = networkState.officialSyncProgress,
                     officialSyncedCount = networkState.officialSyncedCount,
+                    invalidatedRouteCount = networkState.invalidatedRouteCount,
                     mobile = mobile,
                     onMobileChange = { mobile = it },
                     smsCode = smsCode,
@@ -360,11 +361,13 @@ fun AccountScreen(viewModel: MainViewModel) {
     }
 
     if (showOfficialDestsDialog) {
+        val activeHome = session.homeCity.ifBlank { searchState.originCity.ifBlank { "杭州" } }
         val dests = searchState.officialAllowedDestinations.orEmpty()
+        val liveVerifiedCnt = (networkState.officialSyncedCount - networkState.bundledRouteCount).coerceAtLeast(0)
         AlertDialog(
             onDismissRequest = { showOfficialDestsDialog = false },
             containerColor = p.cardBg,
-            title = { Text("${session.homeCity}出发 · 已同步航线 (${dests.size})", style = LoongType.headline, color = p.textPrimary) },
+            title = { Text("${activeHome}出发 · 畅飞航网 (${dests.size})", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier
@@ -372,6 +375,14 @@ fun AccountScreen(viewModel: MainViewModel) {
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
+                    Surface(color = p.subtleSurface, shape = RoundedCornerShape(12.dp)) {
+                        Text(
+                            text = "全网有效航线 ${networkState.officialSyncedCount} 条（实时校验 $liveVerifiedCnt 条 · 内置基准 ${networkState.bundledRouteCount} 条 · 已剔除失效 ${networkState.invalidatedRouteCount} 条）",
+                            style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+                            color = p.textSecondary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
+                        )
+                    }
                     if (dests.isEmpty()) {
                         Text(
                             "尚未同步该城市航线，请点击下方按钮重新拉取。",
@@ -537,6 +548,7 @@ private fun ProfileMainPage(
     syncTotalCount: Int,
     officialSyncProgress: String,
     officialSyncedCount: Int,
+    invalidatedRouteCount: Int,
     mobile: String,
     onMobileChange: (String) -> Unit,
     smsCode: String,
@@ -887,8 +899,12 @@ private fun ProfileMainPage(
                             )
                             SettingsRowItem(
                                 icon = Icons.Default.TravelExplore,
-                                title = "已同步航线",
-                                trailingText = "已同步 $officialSyncedCount 条",
+                                title = "畅飞航网管理",
+                                trailingText = if (invalidatedRouteCount > 0) {
+                                    "有效 $officialSyncedCount · 已剔除 $invalidatedRouteCount"
+                                } else {
+                                    "有效 $officialSyncedCount 条"
+                                },
                                 onClick = onOpenOfficialDests
                             )
                         }

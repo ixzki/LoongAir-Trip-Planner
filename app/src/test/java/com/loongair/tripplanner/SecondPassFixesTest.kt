@@ -3,15 +3,19 @@ package com.loongair.tripplanner
 import com.loongair.tripplanner.data.local.FlightRouteEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
+import com.loongair.tripplanner.data.remote.BundledChangfeiNetwork
 import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
 import com.loongair.tripplanner.ui.account.isAllowedCaptchaUrl
+import kotlinx.serialization.json.Json
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
+import org.junit.Assert.assertNotNull
 import org.junit.Assert.assertNull
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import java.io.File
 import java.time.LocalDate
 import java.time.ZoneId
 import java.time.ZonedDateTime
@@ -149,5 +153,70 @@ class SecondPassFixesTest {
         // 组内优先挑 status == 1（周三 12-02 或周日 11-29），绝不挑 status == 0 的周五 12-04；且二四六组为 null
         assertEquals("2026-12-02", oddDate)
         assertNull(evenDate)
+    }
+
+    @Test
+    fun routeInvalidityDetection_prunesSuspendedRoutesWhilePreservingSoldOutAndUnopened() {
+        val base = LocalDate.of(2026, 11, 25)
+        // 换季停航航线（如威海->长春：27天全为 -4 无班，31天为 -1 未开放）-> 判定失效自动剔除
+        val suspendedCal = buildMap {
+            for (i in 0..2) put(base.plusDays(i.toLong()).toString(), -1)
+            for (i in 3..29) put(base.plusDays(i.toLong()).toString(), -4)
+            for (i in 30..57) put(base.plusDays(i.toLong()).toString(), -1)
+        }
+        assertTrue(RoundTripMatcher.isRouteInvalidByCalendar(suspendedCal))
+
+        // 冬季热门全部售罄航线（如杭州->三亚：27天为 0 已兑完）-> 有效航线，绝不误删！
+        val soldOutCal = buildMap {
+            for (i in 0..2) put(base.plusDays(i.toLong()).toString(), -1)
+            for (i in 3..29) put(base.plusDays(i.toLong()).toString(), 0)
+            for (i in 30..57) put(base.plusDays(i.toLong()).toString(), -1)
+        }
+        assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(soldOutCal))
+
+        // 尚未开放评估的全 -1 日历 -> 不误删
+        val unopenedCal = (0..30).associate { base.plusDays(it.toLong()).toString() to -1 }
+        assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(unopenedCal))
+
+        assertTrue(RoundTripMatcher.isInapplicableRouteErrorMessage("当前次卡不适用该航线"))
+        assertFalse(RoundTripMatcher.isInapplicableRouteErrorMessage("长龙会员会话已过期"))
+        assertFalse(RoundTripMatcher.isInapplicableRouteErrorMessage("请求过于频繁，请稍后再试"))
+    }
+
+    @Test
+    fun bundledChangfeiNetworkAsset_isCompleteSymmetricAndFullyMapped() {
+        val candidates = listOf(
+            File("src/main/assets/bundled_changfei_network.json"),
+            File("app/src/main/assets/bundled_changfei_network.json")
+        )
+        val assetFile = candidates.firstOrNull { it.exists() }
+        assertNotNull("bundled_changfei_network.json should exist", assetFile)
+        val parsed = testJson.decodeFromString<BundledChangfeiNetwork>(assetFile!!.readText(Charsets.UTF_8))
+
+        assertTrue(parsed.version >= 20261125)
+        assertEquals(75, parsed.airports.size)
+        assertEquals(410, parsed.routes.size)
+        assertTrue(parsed.flights.size >= 440)
+
+        // 校验全部 410 条航线严格对称、三字码合法、且每座城市都有地理坐标
+        val pairSet = parsed.routes.map { it.fromCity to it.toCity }.toSet()
+        assertEquals(parsed.routes.size, pairSet.size)
+        for (r in parsed.routes) {
+            assertTrue("Reverse of ${r.fromCity}->${r.toCity} must exist", (r.toCity to r.fromCity) in pairSet)
+            assertTrue(CityIataMapper.isAsciiIataCode(r.fromIata))
+            assertTrue(CityIataMapper.isAsciiIataCode(r.toIata))
+            assertNotNull("Missing geoCoords for ${r.fromCity}", CityIataMapper.geoCoordsFor(r.fromCity))
+            assertNotNull("Missing geoCoords for ${r.toCity}", CityIataMapper.geoCoordsFor(r.toCity))
+        }
+
+        // 校验全部航班时刻无未解码字符、无空班期
+        for (f in parsed.flights) {
+            assertFalse("Obfuscated flightNo: ${f.flightNo}", f.flightNo.contains("&"))
+            assertTrue("Flight frequency must be non-empty: ${f.flightNo}", f.frequency.any { it in '1'..'7' })
+        }
+    }
+
+    companion object {
+        private val testJson = Json { ignoreUnknownKeys = true }
     }
 }

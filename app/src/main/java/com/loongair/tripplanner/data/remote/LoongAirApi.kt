@@ -90,9 +90,13 @@ class LoongAirApi(
         val isAuthOrVerify = method.contains("VerifyCode") ||
             method.contains("Login") ||
             method.contains("refreshToken")
+        val isHeavyFlightSearch = method == "secCardSearchFlights"
         var attempt = 0
         while (true) {
-            rateLimiter.acquirePermit(isAuthOrVerify = isAuthOrVerify)
+            rateLimiter.acquirePermit(
+                isAuthOrVerify = isAuthOrVerify,
+                isHeavyFlightSearch = isHeavyFlightSearch
+            )
             val cleanToken = sessionToken.removePrefix("SESSION=").trim()
             val payload = buildJsonObject {
                 put("AppID", "ClientService")

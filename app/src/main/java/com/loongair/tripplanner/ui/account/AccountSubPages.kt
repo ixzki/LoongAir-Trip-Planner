@@ -179,7 +179,7 @@ internal fun CardsSubPage(
                                 color = p.textPrimary
                             )
                             Text(
-                                text = "当前生效授权 ID：${session.secCardGrantTid.ifBlank { "未识别，请同步卡包" }}",
+                                text = "当前生效授权 ID：${UserSessionState.maskGrantId(session.secCardGrantTid).ifBlank { "未识别，请同步卡包" }}",
                                 style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
                                 color = p.textSecondary
                             )
@@ -268,7 +268,7 @@ internal fun CardsSubPage(
                                                 )
                                             }
                                             Text(
-                                                "ID: ${card.grantTid}",
+                                                "ID: ${UserSessionState.maskGrantId(card.grantTid)}",
                                                 style = LoongType.footnote.copy(fontSize = 12.sp, fontFeatureSettings = "tnum"),
                                                 color = p.textTertiary
                                             )
@@ -372,7 +372,7 @@ internal fun SettingsSubPage(
                     )
                     SettingsRowItem(
                         icon = Icons.Default.DeleteOutline,
-                        title = "清空本地航线与缓存",
+                        title = "清空日历缓存并恢复内置航线库",
                         onClick = onClearCache
                     )
                     SettingsRowItem(
@@ -514,7 +514,7 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                 SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
                     Text(
                         text = "• 开源参考：长龙官方接口协议参考开源项目 eureka-wu/clairline（MIT License）；界面动效、字阶与视觉语言致敬开源项目 zzNaLogiczz/chher-public。\n\n" +
-                            "• 零预置原则：本应用不内置任何离线城市或历史时刻表，所有城市、航线与航班时刻均由您登录后直连长龙官方接口实时同步。\n\n" +
+                            "• 航网管理：应用内置经官方接口核验的全网畅飞卡基准航线与时刻，新用户免全量拉取即可规划；登录查询或同步时若检测到某条内置航线已停航或当前卡片不适用，会自动永久剔除失效航线。\n\n" +
                             "• 免责声明：本应用为个人行程规划工具，与浙江长龙航空有限公司无任何官方关联；最终可兑资格、航班时刻与剩余座位数请以长龙航空官方 App 及微信小程序为准。",
                         style = LoongType.subhead.copy(lineHeight = 24.sp),
                         color = p.textSecondary

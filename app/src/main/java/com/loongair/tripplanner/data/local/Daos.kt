@@ -19,9 +19,6 @@ interface FlightRouteDao {
     @Query("DELETE FROM flight_routes WHERE fromCity = :fromCity AND toCity = :toCity")
     suspend fun deleteForRoute(fromCity: String, toCity: String)
 
-    @Query("DELETE FROM flight_routes WHERE season != 'official'")
-    suspend fun deleteLegacySeeded()
-
     @Query("DELETE FROM flight_routes")
     suspend fun clearAll()
 
@@ -67,6 +64,9 @@ interface CalendarCacheDao {
     @Query("SELECT * FROM route_calendar WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate >= :minDate ORDER BY flightDate ASC")
     suspend fun getAllForRoute(fromCity: String, toCity: String, minDate: String): List<CalendarCacheEntity>
 
+    @Query("DELETE FROM route_calendar WHERE fromCity = :fromCity AND toCity = :toCity")
+    suspend fun deleteForRoute(fromCity: String, toCity: String)
+
     @Query("DELETE FROM route_calendar WHERE flightDate < :minDate")
     suspend fun deleteExpired(minDate: String)
 
@@ -78,6 +78,9 @@ interface CalendarCacheDao {
 interface SeatSnapshotDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<SeatSnapshotEntity>)
+
+    @Query("DELETE FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity")
+    suspend fun deleteForRoute(fromCity: String, toCity: String)
 
     @Query("DELETE FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate = :date")
     suspend fun deleteForRouteDate(fromCity: String, toCity: String, date: String)
@@ -193,6 +196,9 @@ interface OfficialRouteDao {
     @Query("DELETE FROM official_routes WHERE fromCity = :fromCity")
     suspend fun deleteForOrigin(fromCity: String)
 
+    @Query("DELETE FROM official_routes WHERE fromCity = :fromCity AND toCity = :toCity")
+    suspend fun deleteOne(fromCity: String, toCity: String)
+
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<OfficialRouteEntity>)
 
@@ -211,6 +217,30 @@ interface OfficialAirportDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<OfficialAirportEntity>)
 
+    @Query("DELETE FROM official_airports WHERE cityName NOT IN (SELECT fromCity FROM official_routes UNION SELECT toCity FROM official_routes)")
+    suspend fun deleteOrphans()
+
     @Query("DELETE FROM official_airports")
+    suspend fun clearAll()
+}
+
+@Dao
+interface InvalidatedRouteDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsert(item: InvalidatedRouteEntity)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun upsertAll(items: List<InvalidatedRouteEntity>)
+
+    @Query("DELETE FROM invalidated_routes WHERE fromCity = :fromCity AND toCity = :toCity")
+    suspend fun deleteOne(fromCity: String, toCity: String)
+
+    @Query("SELECT * FROM invalidated_routes ORDER BY invalidatedAt DESC")
+    suspend fun getAll(): List<InvalidatedRouteEntity>
+
+    @Query("SELECT COUNT(*) FROM invalidated_routes")
+    suspend fun count(): Int
+
+    @Query("DELETE FROM invalidated_routes")
     suspend fun clearAll()
 }

@@ -16,17 +16,25 @@ class ApiRateLimitException(message: String) : IllegalStateException(message)
  * - 遇到 HTTP 429 / 502 / 503 / 504 或网关繁忙提示时，自动拉长全局冷却窗口并执行带抖动的指数退避。
  */
 class ApiRateLimiter(
-    private val minQueryIntervalMs: Long = 240L,
+    private val minQueryIntervalMs: Long = 260L,
+    private val minFlightSearchIntervalMs: Long = 620L,
     private val timeProvider: () -> Long = System::currentTimeMillis
 ) {
     private val mutex = Mutex()
     private var nextAllowedAtMs: Long = 0L
     private var consecutiveThrottleCount: Int = 0
 
-    suspend fun acquirePermit(isAuthOrVerify: Boolean = false) {
+    suspend fun acquirePermit(
+        isAuthOrVerify: Boolean = false,
+        isHeavyFlightSearch: Boolean = false
+    ) {
         val waitMs = mutex.withLock {
             val now = timeProvider()
-            val spacing = if (isAuthOrVerify) 80L else minQueryIntervalMs + Random.nextLong(0, 70)
+            val spacing = when {
+                isAuthOrVerify -> 80L
+                isHeavyFlightSearch -> minFlightSearchIntervalMs + Random.nextLong(0, 160)
+                else -> minQueryIntervalMs + Random.nextLong(0, 80)
+            }
             val target = max(now, nextAllowedAtMs)
             nextAllowedAtMs = target + spacing
             (target - now).coerceAtLeast(0L)

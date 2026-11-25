@@ -6,11 +6,13 @@ import androidx.lifecycle.viewModelScope
 import com.loongair.tripplanner.TripPlannerApp
 import com.loongair.tripplanner.alarm.NotificationHelper
 import com.loongair.tripplanner.data.local.OfficialAirportEntity
+import com.loongair.tripplanner.data.local.ROUTE_SOURCE_BUNDLED
 import com.loongair.tripplanner.data.local.ReminderEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.local.TripTemplateEntity
 import com.loongair.tripplanner.data.local.UserSessionState
 import com.loongair.tripplanner.data.remote.LoginResult
+import com.loongair.tripplanner.data.remote.RouteInvalidatedException
 import com.loongair.tripplanner.data.repository.FlightCandidate
 import com.loongair.tripplanner.data.repository.NetworkRouteSummary
 import com.loongair.tripplanner.data.repository.RoundTripCandidate
@@ -110,8 +112,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val origins = repo.getAllOriginCities()
         val allNetwork = repo.getAllNetworkRoutes()
         val officialRoutes = repo.getOfficialRoutes()
+        val invalidatedRoutes = repo.getInvalidatedRoutes()
 
-        // 首次登录同步前或清空缓存后，不保留任何旧常驻城市
+        // 清空全部数据前不保留旧常驻城市
         if (allNetwork.isEmpty() && officialRoutes.isEmpty()) {
             if (repo.authPrefs.current().homeCity.isNotBlank()) {
                 repo.authPrefs.setHomeCity("")
@@ -122,6 +125,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             when {
                 origins.isEmpty() -> ""
                 hc in origins -> hc
+                "杭州" in origins -> "杭州"
                 else -> origins.first()
             }
         }
@@ -134,7 +138,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val dests = repo.getDestinationsFrom(effectiveOrigin)
         val allNetworkOrigins = allNetwork.map { it.fromCity }.distinct().sorted()
         val allNetworkDests = allNetwork.map { it.toCity }.distinct().sorted()
-        val lastSyncAt = officialRoutes.maxOfOrNull { it.updatedAt }
+        val lastSyncAt = officialRoutes.filter { it.dataSource != ROUTE_SOURCE_BUNDLED }.maxOfOrNull { it.updatedAt }
+        val bundledCnt = officialRoutes.count { it.dataSource == ROUTE_SOURCE_BUNDLED }
         val officialHomeDests = if (homeCity.isBlank()) {
             null
         } else {
@@ -156,6 +161,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 fromCityFilter = if (st.fromCityFilter in allNetworkOrigins) st.fromCityFilter else "",
                 toCityFilter = if (st.toCityFilter in allNetworkDests) st.toCityFilter else "",
                 officialSyncedCount = officialRoutes.size,
+                bundledRouteCount = bundledCnt,
+                invalidatedRouteCount = invalidatedRoutes.size,
                 lastOfficialSyncAt = lastSyncAt,
                 isLoading = false
             ).withRecomputedFilter()
@@ -256,6 +263,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showMessage("$fromCity → $toCity 日历已刷新：近40天共有 $avail 天可兑换")
             } catch (c: CancellationException) {
                 throw c
+            } catch (inv: RouteInvalidatedException) {
+                reloadAllCityAndRouteData()
+                showMessage(inv.message ?: "已自动剔除失效航线")
             } catch (e: Exception) {
                 showMessage("刷新日历失败：${e.message}")
             } finally {
@@ -353,6 +363,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showMessage("${currentRoute.fromCity} → ${currentRoute.toCity} 近40天日历已更新：共 $avail 天可兑")
             } catch (c: CancellationException) {
                 throw c
+            } catch (inv: RouteInvalidatedException) {
+                closeRouteCalendarDetail()
+                reloadAllCityAndRouteData()
+                showMessage(inv.message ?: "已自动剔除失效航线")
             } catch (e: Exception) {
                 showMessage("刷新日历失败：${e.message}")
             } finally {
@@ -396,6 +410,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 }
             } catch (c: CancellationException) {
                 throw c
+            } catch (inv: RouteInvalidatedException) {
+                closeRouteCalendarDetail()
+                reloadAllCityAndRouteData()
+                showMessage(inv.message ?: "该航线已停航或本卡不适用，已自动剔除")
             } catch (e: Exception) {
                 showMessage("查询当日余票失败：${e.message}")
             } finally {
@@ -1066,71 +1084,60 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showMessage("请先登录长龙会员后再同步官方航线")
             return
         }
-        val origin = sessionState.value.homeCity
-        if (origin.isBlank()) {
-            showMessage("请先优先选择并同步一个出发城市的所有航线")
-            return
-        }
+        val origin = sessionState.value.homeCity.ifBlank { _searchState.value.originCity.ifBlank { "杭州" } }
         syncSingleCityAllRoutes(origin)
     }
 
     /**
-     * 基于已发现的官方机场目录，扩展拉取其他枢纽城市的官方可达航线（零本地硬编码城市）
+     * 全网畅飞卡航线与时刻完整拉取（广度优先遍历全部机场 + 增量补齐所有航线日历与时刻）
      */
     fun syncOfficialNetworkHubs() {
         if (!sessionState.value.isLoggedIn) {
-            showMessage("请先登录长龙会员后再扩展同步全网航线")
+            showMessage("请先登录长龙会员后再同步全网航线")
             return
         }
         if (officialSyncJob?.isActive == true) return
 
         officialSyncJob = viewModelScope.launch {
-            val knownAirports = repo.getOfficialAirports().map { it.cityName }
-            val syncedOrigins = repo.getAllOriginCities().toSet()
-            val hubs = (knownAirports.filter { it !in syncedOrigins } + syncedOrigins)
-                .distinct()
-                .take(20)
-            if (hubs.isEmpty()) {
-                showMessage("请先优先同步一个城市的所有航线，再扩展全网枢纽")
-                return@launch
-            }
-
             _networkState.update {
                 it.copy(
                     officialSyncing = true,
-                    syncingCityName = "全网枢纽",
+                    syncingCityName = "全网航线",
                     syncDoneCount = 0,
-                    syncTotalCount = hubs.size,
-                    officialSyncProgress = "准备扩展同步官方机场 0/${hubs.size}..."
+                    syncTotalCount = 1,
+                    officialSyncProgress = "准备遍历全网官方机场与畅飞卡航线..."
                 )
             }
-            var done = 0
-            var totalRoutes = 0
             try {
-                for (hub in hubs) {
-                    _networkState.update {
-                        it.copy(
-                            syncDoneCount = done,
-                            syncTotalCount = hubs.size,
-                            officialSyncProgress = "拉取官方航线 ($done/${hubs.size})：$hub 出发..."
-                        )
+                val summary = repo.syncFullChangfeiNetwork(
+                    onProgress = { done, total, text ->
+                        _networkState.update {
+                            it.copy(
+                                syncDoneCount = done,
+                                syncTotalCount = total,
+                                officialSyncProgress = text
+                            )
+                        }
+                    },
+                    onBatchUpdated = {
+                        reloadAllCityAndRouteData()
                     }
-                    val saved = repo.syncOfficialRoutesForOrigin(hub)
-                    totalRoutes += saved.size
-                    done++
-                    reloadAllCityAndRouteData()
-                    if (done < hubs.size) {
-                        delay(Random.nextLong(900, 1500))
-                    }
-                }
-                showMessage("已完成 $done 座官方机场可达航线扩展（共更新 $totalRoutes 条）")
+                )
+                reloadAllCityAndRouteData()
+                val failNote = if (summary.failedCount > 0) "（${summary.failedCount} 项请求需重试）" else ""
+                showMessage(
+                    "全网同步完成：共 ${summary.totalOfficialRoutes} 条畅飞卡航线，已获取 ${summary.routesWithSchedules} 条时刻$failNote"
+                )
             } catch (_: CancellationException) {
                 withContext(NonCancellable) {
                     reloadAllCityAndRouteData()
                 }
-                showMessage("已停止扩展同步（已更新 $done/${hubs.size} 座机场）")
+                showMessage("已暂停全网同步（已保存进度，再次点击可继续补齐剩余航线）")
             } catch (e: Exception) {
-                showMessage("扩展同步中断：${e.message}")
+                withContext(NonCancellable) {
+                    reloadAllCityAndRouteData()
+                }
+                showMessage("全网同步中断：${e.message}")
             } finally {
                 _networkState.update {
                     it.copy(
@@ -1171,7 +1178,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             repo.clearAllCaches()
             reloadAllCityAndRouteData(initialLoad = true)
-            showMessage("已清空本地航线、机场、日历与余票缓存")
+            showMessage("已清空日历与余票缓存，并恢复全国畅飞卡内置基准航线")
         }
     }
 }

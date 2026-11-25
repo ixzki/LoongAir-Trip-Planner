@@ -130,8 +130,11 @@ data class ReminderEntity(
     val fired: Boolean = false
 )
 
+const val ROUTE_SOURCE_BUNDLED = "bundled"
+const val ROUTE_SOURCE_OFFICIAL = "official"
+
 /**
- * 从长龙官方接口拉取到的当前畅飞卡真实可达航线与机场信息
+ * 畅飞卡可达航线与机场信息（dataSource = "bundled" 为应用内置基准，"official" 为用户本机实时校验）
  */
 @Entity(
     tableName = "official_routes",
@@ -144,11 +147,12 @@ data class OfficialRouteEntity(
     val toCity: String,
     val toAirport: String,
     val toIata: String,
-    val updatedAt: Long
+    val updatedAt: Long,
+    val dataSource: String = ROUTE_SOURCE_OFFICIAL
 )
 
 /**
- * 登录后从长龙官方接口实时同步的城市与机场目录（首次登录前为空）
+ * 畅飞卡通航城市与机场目录
  */
 @Entity(tableName = "official_airports")
 data class OfficialAirportEntity(
@@ -157,4 +161,19 @@ data class OfficialAirportEntity(
     val airportCode: String,
     val pinyin: String = "",
     val updatedAt: Long
+)
+
+/**
+ * 已检测到停航、下线或当前畅飞卡不适用的失效航线墓碑记录：
+ * 保证被自动剔除的内置航线在应用重启后绝不会死灰复燃，直到长龙官方重新恢复该航线。
+ */
+@Entity(
+    tableName = "invalidated_routes",
+    primaryKeys = ["fromCity", "toCity"]
+)
+data class InvalidatedRouteEntity(
+    val fromCity: String,
+    val toCity: String,
+    val reason: String,
+    val invalidatedAt: Long
 )

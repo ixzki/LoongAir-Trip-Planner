@@ -55,11 +55,12 @@ class RateLimiterAndMigrationTest {
         } as SupportSQLiteDatabase
 
         val migrations = AppDatabase.ALL_MIGRATIONS
-        assertEquals(4, migrations.size)
+        assertEquals(5, migrations.size)
         assertEquals(1 to 2, migrations[0].startVersion to migrations[0].endVersion)
         assertEquals(2 to 3, migrations[1].startVersion to migrations[1].endVersion)
         assertEquals(3 to 4, migrations[2].startVersion to migrations[2].endVersion)
         assertEquals(4 to 5, migrations[3].startVersion to migrations[3].endVersion)
+        assertEquals(5 to 6, migrations[4].startVersion to migrations[4].endVersion)
 
         migrations.forEach { it.migrate(fakeDb) }
         assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS official_routes") })
@@ -69,6 +70,8 @@ class RateLimiterAndMigrationTest {
         assertTrue(executedSql.any { it.contains("PRIMARY KEY(`fromCity`, `toCity`, `flightDate`, `flightNo`, `depTime`, `cabinCode`)") })
         assertTrue(executedSql.any { it.contains("index_route_calendar_toCity_flightDate") })
         assertTrue(executedSql.any { it.contains("index_reminders_enabled_fired_triggerAtMillis") })
+        assertTrue(executedSql.any { it.contains("ALTER TABLE `official_routes` ADD COLUMN `dataSource`") })
+        assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS `invalidated_routes`") })
     }
 
     @Test

@@ -243,6 +243,27 @@ object RoundTripMatcher {
             ?: pool.firstOrNull { it.third == 0 }?.second
     }
 
+    /**
+     * 判断 60 天放票日历是否证明该航线已停航或当前畅飞卡不适用：
+     * 日历返回不少于 14 天，且全周期无任何一天可兑 (1) 或已兑完 (0)，同时明确无班 (-4) 或不适用 (-2) 不少于 10 天。
+     */
+    fun isRouteInvalidByCalendar(calMap: Map<String, Int>): Boolean {
+        if (calMap.size < 14) return false
+        if (calMap.values.any { it == 1 || it == 0 }) return false
+        val explicitDeadDays = calMap.values.count { it == -4 || it == -2 }
+        return explicitDeadDays >= 10
+    }
+
+    /**
+     * 判断长龙接口业务报错文案是否明确指出该航线已取消或不在当前畅飞卡适用航线池内
+     * （绝不误匹配网络波动、限流或登录过期错误）。
+     */
+    fun isInapplicableRouteErrorMessage(message: String?): Boolean {
+        if (message.isNullOrBlank()) return false
+        val keywords = listOf("不适用", "不支持该航线", "不在适用", "无此航线", "航线不存在", "不可兑换该航线")
+        return keywords.any { message.contains(it) }
+    }
+
     fun matchesDayOfWeek(frequency: String, date: LocalDate): Boolean {
         val clean = frequency.trim()
         if (clean.isEmpty()) return true

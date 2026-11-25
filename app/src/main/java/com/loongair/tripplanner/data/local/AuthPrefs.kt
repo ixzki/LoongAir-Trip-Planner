@@ -204,12 +204,22 @@ class AuthPrefs(
     }
 
     @Synchronized
+    fun getBundledNetworkVersion(): Int = prefs.getInt(KEY_BUNDLED_VERSION, 0)
+
+    @Synchronized
+    fun setBundledNetworkVersion(version: Int) {
+        prefs.edit().putInt(KEY_BUNDLED_VERSION, version).apply()
+    }
+
+    @Synchronized
     fun clearSession() {
         val keepHomeCity = current().homeCity
         val keepTheme = current().themeStyle
+        val keepBundleVer = getBundledNetworkVersion()
         prefs.edit().clear()
             .putString(KEY_HOME_CITY, keepHomeCity)
             .putString(KEY_THEME_STYLE, keepTheme)
+            .putInt(KEY_BUNDLED_VERSION, keepBundleVer)
             .apply()
         _state.value = readState()
     }
@@ -230,6 +240,7 @@ class AuthPrefs(
         private const val KEY_THEME_STYLE = "theme_style"
         private const val KEY_CARDS_JSON = "detected_cards_json"
         private const val KEY_CARD_DIAG = "card_diagnostic"
+        private const val KEY_BUNDLED_VERSION = "bundled_network_version"
 
         private val SENSITIVE_KEYS = listOf(
             KEY_TOKEN,

@@ -33,6 +33,8 @@ data class NetworkUiState(
     val syncTotalCount: Int = 0,
     val officialSyncProgress: String = "",
     val officialSyncedCount: Int = 0,
+    val bundledRouteCount: Int = 0,
+    val invalidatedRouteCount: Int = 0,
     val lastOfficialSyncAt: Long? = null,
     val isLoading: Boolean = true
 ) {

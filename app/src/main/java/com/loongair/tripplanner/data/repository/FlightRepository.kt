@@ -6,19 +6,25 @@ import com.loongair.tripplanner.data.local.AppDatabase
 import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.local.CalendarCacheEntity
 import com.loongair.tripplanner.data.local.FlightRouteEntity
+import com.loongair.tripplanner.data.local.InvalidatedRouteEntity
 import com.loongair.tripplanner.data.local.OfficialAirportEntity
 import com.loongair.tripplanner.data.local.OfficialRouteEntity
+import com.loongair.tripplanner.data.local.ROUTE_SOURCE_BUNDLED
+import com.loongair.tripplanner.data.local.ROUTE_SOURCE_OFFICIAL
 import com.loongair.tripplanner.data.local.ReminderEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.local.TripTemplateEntity
 import com.loongair.tripplanner.data.remote.ApiRateLimitException
+import com.loongair.tripplanner.data.remote.BundledChangfeiNetwork
 import com.loongair.tripplanner.data.remote.ChinaProvincePath
 import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.CityMeta
 import com.loongair.tripplanner.data.remote.CitySyncSummary
+import com.loongair.tripplanner.data.remote.FullNetworkSyncSummary
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.data.remote.LoongAirApi
+import com.loongair.tripplanner.data.remote.RouteInvalidatedException
 import com.loongair.tripplanner.data.remote.SessionExpiredException
 import com.loongair.tripplanner.util.ChinaClock
 import com.loongair.tripplanner.util.suspendRunCatching
@@ -44,7 +50,8 @@ data class NetworkRouteSummary(
     val officialUpdatedAt: Long?,
     val isCalendarSynced: Boolean = false,
     val soldOutDaysCount: Int = 0,
-    val hasOperatingDaysInCalendar: Boolean = false
+    val hasOperatingDaysInCalendar: Boolean = false,
+    val dataSource: String = ROUTE_SOURCE_OFFICIAL
 )
 
 class FlightRepository(
@@ -59,10 +66,9 @@ class FlightRepository(
     private var cachedProvinces: List<ChinaProvincePath>? = null
 
     /**
-     * 仅初始化默认往返时间模板与清理过期缓存；绝不预置任何城市或航线数据。
+     * 初始化默认往返模板、清理过期缓存、按版本导入内置畅飞卡基准航线，并自动清理已确认失效的停航航线。
      */
     suspend fun ensureInitialized() = withContext(Dispatchers.IO) {
-        db.flightRouteDao().deleteLegacySeeded()
         if (db.tripTemplateDao().count() == 0) {
             db.tripTemplateDao().insertAll(RoundTripMatcher.defaultTemplates())
         }
@@ -70,7 +76,10 @@ class FlightRepository(
         db.calendarCacheDao().deleteExpired(todayStr)
         db.seatSnapshotDao().deleteExpired(todayStr)
 
-        // 若曾经同步过机场，向动态三字码与拼音表注册以支持后续搜索编解码
+        // 按版本号合并导入内置全国畅飞卡航线库（严格跳过已被标记失效的墓碑航线）
+        ensureBundledNetworkLoaded(forceReset = false)
+
+        // 向动态三字码与拼音表注册所有已知机场
         db.officialAirportDao().getAll().forEach { ap ->
             CityIataMapper.registerDynamic(ap.cityName, ap.airportCode, ap.pinyin)
         }
@@ -79,8 +88,167 @@ class FlightRepository(
         repairObfuscatedFlightNumbers()
         // 将已缓存的双机场城市（如成都天府/成都双流、北京首都/大兴、上海浦东/虹桥、遵义新舟/茅台）分开标注，并修复可能被误存的非英文三字码
         upgradeDualAirportNames()
-        // 自动清理历史同步中被近3天/30天外「-1 未开放」污染的虚标执飞星期（如将误标「一二三四五日」还原为「一三五日」）
+        // 自动剔除本地日历已明确证明全期停航 (-4) 的失效航线，并清理被 -1 未开放污染的虚标星期
+        pruneCalendarInvalidRoutes()
         repairCalendarPollutedFrequencies()
+    }
+
+    private fun readBundledNetworkAsset(): BundledChangfeiNetwork? {
+        return runCatching {
+            val raw = context.assets.open("bundled_changfei_network.json")
+                .bufferedReader()
+                .use { it.readText() }
+            json.decodeFromString<BundledChangfeiNetwork>(raw)
+        }.getOrNull()
+    }
+
+    /**
+     * 导入或重置应用内置的畅飞卡基准航线包：
+     * - forceReset = false：仅在首次安装或内置包版本号升级时增量补齐未收录航线与时刻，且严格跳过 invalidated_routes 墓碑表；
+     * - forceReset = true：清空旧缓存与墓碑后完整恢复内置基准航线（用于切换畅飞卡或手动重置）。
+     */
+    suspend fun ensureBundledNetworkLoaded(forceReset: Boolean = false) = withContext(Dispatchers.IO) {
+        val bundle = readBundledNetworkAsset() ?: return@withContext
+        if (bundle.version <= 0 || bundle.routes.isEmpty()) return@withContext
+
+        val loadedVersion = authPrefs.getBundledNetworkVersion()
+        val currentRouteCount = db.officialRouteDao().getAll().size
+        val invalidatedCount = db.invalidatedRouteDao().count()
+        val needsImport = forceReset ||
+            bundle.version > loadedVersion ||
+            (currentRouteCount == 0 && invalidatedCount == 0)
+        if (!needsImport) return@withContext
+
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            if (forceReset) {
+                db.calendarCacheDao().clearAll()
+                db.seatSnapshotDao().clearAll()
+                db.invalidatedRouteDao().clearAll()
+                db.officialRouteDao().clearAll()
+                db.flightRouteDao().clearAll()
+                db.officialAirportDao().clearAll()
+            }
+
+            val invalidatedKeys = db.invalidatedRouteDao().getAll()
+                .map { "${it.fromCity}|${it.toCity}" }
+                .toSet()
+            val existingAirports = db.officialAirportDao().getAll().associateBy { it.cityName }
+            val existingRoutes = db.officialRouteDao().getAll().associateBy { "${it.fromCity}|${it.toCity}" }
+            val existingFlightPairs = db.flightRouteDao().getAll()
+                .map { "${it.fromCity}|${it.toCity}" }
+                .toSet()
+
+            val airportsToUpsert = bundle.airports.mapNotNull { ap ->
+                val prev = existingAirports[ap.cityName]
+                if (prev == null || prev.airportName == "${ap.cityName}机场") {
+                    OfficialAirportEntity(
+                        cityName = ap.cityName,
+                        airportName = ap.airportName.ifBlank { "${ap.cityName}机场" },
+                        airportCode = ap.airportCode,
+                        pinyin = ap.pinyin,
+                        updatedAt = prev?.updatedAt ?: now
+                    )
+                } else null
+            }
+            if (airportsToUpsert.isNotEmpty()) {
+                db.officialAirportDao().upsertAll(airportsToUpsert)
+            }
+
+            val routesToInsert = bundle.routes.mapNotNull { r ->
+                val key = "${r.fromCity}|${r.toCity}"
+                if (key in invalidatedKeys || key in existingRoutes) return@mapNotNull null
+                OfficialRouteEntity(
+                    fromCity = r.fromCity,
+                    fromAirport = r.fromAirport,
+                    fromIata = r.fromIata,
+                    toCity = r.toCity,
+                    toAirport = r.toAirport,
+                    toIata = r.toIata,
+                    updatedAt = now,
+                    dataSource = ROUTE_SOURCE_BUNDLED
+                )
+            }
+            if (routesToInsert.isNotEmpty()) {
+                db.officialRouteDao().upsertAll(routesToInsert)
+            }
+
+            val flightsToInsert = bundle.flights.mapNotNull { f ->
+                val key = "${f.fromCity}|${f.toCity}"
+                if (key in invalidatedKeys || key in existingFlightPairs) return@mapNotNull null
+                FlightRouteEntity(
+                    fromCity = f.fromCity,
+                    toCity = f.toCity,
+                    fromIata = f.fromIata,
+                    toIata = f.toIata,
+                    flightNo = f.flightNo,
+                    depTime = f.depTime,
+                    arrTime = f.arrTime,
+                    duration = f.duration,
+                    aircraft = f.aircraft.ifBlank { "A320" },
+                    frequency = f.frequency,
+                    stopover = f.stopover.ifBlank { "直飞" },
+                    season = ROUTE_SOURCE_BUNDLED
+                )
+            }
+            if (flightsToInsert.isNotEmpty()) {
+                db.flightRouteDao().insertAll(flightsToInsert)
+            }
+            db.officialAirportDao().deleteOrphans()
+        }
+
+        db.officialAirportDao().getAll().forEach { ap ->
+            CityIataMapper.registerDynamic(ap.cityName, ap.airportCode, ap.pinyin)
+        }
+        authPrefs.setBundledNetworkVersion(bundle.version)
+    }
+
+    /**
+     * 原子标记单条航线已失效，从航线、航班时刻、日历与余票快照中彻底删除，并写入墓碑表防止重启复活。
+     */
+    suspend fun invalidateAndDeleteRoute(
+        fromCity: String,
+        toCity: String,
+        reason: String
+    ) = withContext(Dispatchers.IO) {
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            db.officialRouteDao().deleteOne(fromCity, toCity)
+            db.flightRouteDao().deleteForRoute(fromCity, toCity)
+            db.calendarCacheDao().deleteForRoute(fromCity, toCity)
+            db.seatSnapshotDao().deleteForRoute(fromCity, toCity)
+            db.invalidatedRouteDao().upsert(
+                InvalidatedRouteEntity(
+                    fromCity = fromCity,
+                    toCity = toCity,
+                    reason = reason,
+                    invalidatedAt = now
+                )
+            )
+            db.officialAirportDao().deleteOrphans()
+        }
+    }
+
+    suspend fun getInvalidatedRoutes(): List<InvalidatedRouteEntity> = withContext(Dispatchers.IO) {
+        db.invalidatedRouteDao().getAll()
+    }
+
+    private suspend fun pruneCalendarInvalidRoutes(): Int {
+        val todayStr = ChinaClock.today().toString()
+        val allCalsByPair = db.calendarCacheDao().getAllFromDate(todayStr)
+            .groupBy { "${it.fromCity}|${it.toCity}" }
+        if (allCalsByPair.isEmpty()) return 0
+        var pruned = 0
+        for ((key, cals) in allCalsByPair) {
+            val cmap = cals.associate { it.flightDate to it.status }
+            if (RoundTripMatcher.isRouteInvalidByCalendar(cmap)) {
+                val fromCity = key.substringBefore("|")
+                val toCity = key.substringAfter("|")
+                invalidateAndDeleteRoute(fromCity, toCity, "放票日历检测近期全月无执飞排班")
+                pruned++
+            }
+        }
+        return pruned
     }
 
     private suspend fun repairCalendarPollutedFrequencies() {
@@ -359,18 +527,40 @@ class FlightRepository(
                     toCity = ep.cityName,
                     toAirport = toAirport,
                     toIata = toCode,
-                    updatedAt = now
+                    updatedAt = now,
+                    dataSource = ROUTE_SOURCE_OFFICIAL
                 )
             }
+
+            val prevRoutes = db.officialRouteDao().getByOrigin(fromCity)
+            val liveToSet = routeEntities.map { it.toCity }.toSet()
+            val removedRoutes = prevRoutes.filter { it.toCity !in liveToSet }
 
             db.withTransaction {
                 if (airportEntities.isNotEmpty()) {
                     db.officialAirportDao().upsertAll(airportEntities)
                 }
+                for (old in removedRoutes) {
+                    db.flightRouteDao().deleteForRoute(fromCity, old.toCity)
+                    db.calendarCacheDao().deleteForRoute(fromCity, old.toCity)
+                    db.seatSnapshotDao().deleteForRoute(fromCity, old.toCity)
+                    db.invalidatedRouteDao().upsert(
+                        InvalidatedRouteEntity(
+                            fromCity = fromCity,
+                            toCity = old.toCity,
+                            reason = "官方畅飞卡可达目录已移除该航线",
+                            invalidatedAt = now
+                        )
+                    )
+                }
                 db.officialRouteDao().deleteForOrigin(fromCity)
                 if (routeEntities.isNotEmpty()) {
                     db.officialRouteDao().upsertAll(routeEntities)
+                    for (r in routeEntities) {
+                        db.invalidatedRouteDao().deleteOne(r.fromCity, r.toCity)
+                    }
                 }
+                db.officialAirportDao().deleteOrphans()
             }
             routeEntities
         }
@@ -415,7 +605,7 @@ class FlightRepository(
 
             // 1) 去程：放票日历 + 双模式（一三五日 & 二四六）采样真实班次以区分隔日不同航班
             val outCalRes = runSyncStep { refreshRouteCalendar(originCity, destCity) }
-            if (outCalRes.isFailure) {
+            if (outCalRes.isFailure && outCalRes.exceptionOrNull() !is RouteInvalidatedException) {
                 failedCal++
                 failedDests.add(destCity)
             }
@@ -438,7 +628,7 @@ class FlightRepository(
 
             // 2) 返程：放票日历 + 双模式采样真实班次（使往返配对立刻可用且不虚标每日）
             val retCalRes = runSyncStep { refreshRouteCalendar(destCity, originCity) }
-            if (retCalRes.isFailure) {
+            if (retCalRes.isFailure && retCalRes.exceptionOrNull() !is RouteInvalidatedException) {
                 failedCal++
                 failedDests.add(destCity)
             }
@@ -582,6 +772,123 @@ class FlightRepository(
             calOperatingDows = calDows
         )
         db.flightRouteDao().getRoutes(fromCity, toCity).isNotEmpty()
+    }
+
+    /**
+     * 全网畅飞卡航线完整拉取（两阶段 BFS）：
+     * 1. 广度优先遍历全部官方机场，逐城调用 getSecCardArriveAirport 补齐 100% 官方可达航线图（自动清理无畅飞航线的孤立机场）；
+     * 2. 遍历全部官方航线，补齐放票日历与双模式真实班次时刻（当天已拉取过的航线自动增量跳过，防风控且支持断点续跑）。
+     */
+    suspend fun syncFullChangfeiNetwork(
+        onProgress: suspend (done: Int, total: Int, text: String) -> Unit = { _, _, _ -> },
+        onBatchUpdated: suspend () -> Unit = {}
+    ): FullNetworkSyncSummary = withContext(Dispatchers.IO) {
+        val recentThreshold = System.currentTimeMillis() - 6L * 3600_000L
+        val existingOfficial = db.officialRouteDao().getAll()
+        // 仅将拥有 >=2 条航线或近6小时刚全量同步过的出发地视为已完成目录拉取（避免单条返程被误判为已拉全目录）
+        val freshOrigins = existingOfficial
+            .groupBy { it.fromCity }
+            .filterValues { list ->
+                val maxTs = list.maxOfOrNull { it.updatedAt } ?: 0L
+                maxTs >= recentThreshold && existingOfficial.size >= 300
+            }
+            .keys
+
+        if (freshOrigins.isEmpty()) {
+            runSyncStep { syncOfficialDepartureAirports() }
+        }
+        val seedCities = linkedSetOf<String>().apply {
+            db.officialAirportDao().getAll().forEach { add(it.cityName) }
+            existingOfficial.forEach {
+                add(it.fromCity)
+                add(it.toCity)
+            }
+        }
+        val queue = ArrayDeque<String>(seedCities.filter { it !in freshOrigins })
+        val visited = linkedSetOf<String>().apply { addAll(freshOrigins) }
+        var failedCount = 0
+
+        while (queue.isNotEmpty()) {
+            val origin = queue.removeFirst().trim()
+            if (origin.isEmpty() || origin in visited) continue
+            visited.add(origin)
+            val totalEst = visited.size + queue.size
+            onProgress(visited.size, totalEst, "全网机场遍历 (${visited.size}/$totalEst)：$origin 出发...")
+
+            val res = runSyncStep { syncOfficialRoutesForOrigin(origin) }
+            if (res.isFailure) {
+                failedCount++
+            } else {
+                for (r in res.getOrDefault(emptyList())) {
+                    if (r.toCity !in visited && r.toCity !in queue) {
+                        queue.addLast(r.toCity)
+                    }
+                }
+            }
+            if (visited.size % 10 == 0) {
+                onBatchUpdated()
+            }
+        }
+
+        // 清理未开通任何畅飞卡航线的孤立目录机场（如香港、台中等港澳台节点）
+        db.officialAirportDao().deleteOrphans()
+        onBatchUpdated()
+
+        val allRoutes = db.officialRouteDao().getAll()
+        val todayStr = ChinaClock.today().toString()
+        val freshCalPairs = db.calendarCacheDao().getAllFromDate(todayStr)
+            .groupBy { "${it.fromCity}|${it.toCity}" }
+            .filterValues { list -> (list.maxOfOrNull { it.updatedAt } ?: 0L) >= recentThreshold }
+            .keys
+            .toMutableSet()
+
+        for ((idx, r) in allRoutes.withIndex()) {
+            val key = "${r.fromCity}|${r.toCity}"
+            onProgress(idx + 1, allRoutes.size, "同步全网时刻 (${idx + 1}/${allRoutes.size})：${r.fromCity} → ${r.toCity}")
+            var touched = false
+            if (key !in freshCalPairs) {
+                val calRes = runSyncStep { refreshRouteCalendar(r.fromCity, r.toCity) }
+                if (calRes.isFailure) failedCount++ else freshCalPairs.add(key)
+                touched = true
+            }
+            val existingFlights = db.flightRouteDao().getRoutes(r.fromCity, r.toCity)
+            if (existingFlights.isEmpty()) {
+                val calMap = getRouteCalendarMap(r.fromCity, r.toCity)
+                if (calMap.isNotEmpty()) {
+                    val calDows = RoundTripMatcher.deriveFrequencyFromCalendar(calMap)
+                    val (oddDate, evenDate) = RoundTripMatcher.pickDualPatternSampleDates(calMap)
+                    if (oddDate != null || evenDate != null) {
+                        val ok = syncDirectionByDualSamples(
+                            fromCity = r.fromCity,
+                            toCity = r.toCity,
+                            fromIata = r.fromIata,
+                            toIata = r.toIata,
+                            oddDate = oddDate,
+                            evenDate = evenDate,
+                            calOperatingDows = calDows
+                        )
+                        if (!ok) failedCount++
+                        touched = true
+                    }
+                }
+            }
+            if (touched && (idx + 1) % 8 == 0) {
+                onBatchUpdated()
+            }
+        }
+        val pruned = pruneCalendarInvalidRoutes()
+        repairCalendarPollutedFrequencies()
+        onBatchUpdated()
+
+        val finalRoutes = db.officialRouteDao().getAll()
+        val flightPairs = db.flightRouteDao().getAll().map { "${it.fromCity}|${it.toCity}" }.toSet()
+        FullNetworkSyncSummary(
+            queriedAirports = visited.size,
+            totalOfficialRoutes = finalRoutes.size,
+            routesWithSchedules = finalRoutes.count { "${it.fromCity}|${it.toCity}" in flightPairs },
+            failedCount = failedCount,
+            prunedInvalidCount = pruned
+        )
     }
 
     /**
@@ -729,7 +1036,8 @@ class FlightRepository(
                 officialUpdatedAt = off?.updatedAt,
                 isCalendarSynced = routeCals.isNotEmpty(),
                 soldOutDaysCount = soldOutCnt,
-                hasOperatingDaysInCalendar = hasOperating
+                hasOperatingDaysInCalendar = hasOperating,
+                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL
             )
         }.sortedWith(
             compareByDescending<NetworkRouteSummary> { it.availableDaysCount }
@@ -783,7 +1091,8 @@ class FlightRepository(
                 officialUpdatedAt = off?.updatedAt,
                 isCalendarSynced = routeCals.isNotEmpty(),
                 soldOutDaysCount = soldOutCnt,
-                hasOperatingDaysInCalendar = hasOperating
+                hasOperatingDaysInCalendar = hasOperating,
+                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL
             )
         }
 
@@ -876,7 +1185,24 @@ class FlightRepository(
 
     suspend fun refreshRouteCalendar(fromCity: String, toCity: String): Map<String, Int> =
         withContext(Dispatchers.IO) {
-            val calMap = api.getCalendar(fromCity, toCity)
+            val calMap = try {
+                api.getCalendar(fromCity, toCity)
+            } catch (e: Exception) {
+                if (e !is SessionExpiredException &&
+                    e !is ApiRateLimitException &&
+                    RoundTripMatcher.isInapplicableRouteErrorMessage(e.message)
+                ) {
+                    invalidateAndDeleteRoute(fromCity, toCity, e.message ?: "当前畅飞卡不适用该航线")
+                    throw RouteInvalidatedException(fromCity, toCity, "当前畅飞卡不适用该航线")
+                }
+                throw e
+            }
+
+            if (RoundTripMatcher.isRouteInvalidByCalendar(calMap)) {
+                invalidateAndDeleteRoute(fromCity, toCity, "近期全月无执飞排班或本卡不适用")
+                throw RouteInvalidatedException(fromCity, toCity, "近期全月无执飞排班或本卡不适用")
+            }
+
             val now = System.currentTimeMillis()
             val entities = calMap.map { (dateStr, status) ->
                 CalendarCacheEntity(
@@ -889,6 +1215,7 @@ class FlightRepository(
             }
             if (entities.isNotEmpty()) {
                 db.calendarCacheDao().upsertAll(entities)
+                db.invalidatedRouteDao().deleteOne(fromCity, toCity)
             }
             calMap
         }
@@ -900,7 +1227,21 @@ class FlightRepository(
         updateFlightRoutes: Boolean = true
     ): List<LiveFlightSeat> = withContext(Dispatchers.IO) {
         val knownRoutes = db.flightRouteDao().getRoutes(fromCity, toCity)
-        val liveList = api.searchFlights(fromCity, toCity, dateStr, knownRoutes)
+        val liveList = try {
+            api.searchFlights(fromCity, toCity, dateStr, knownRoutes)
+        } catch (e: Exception) {
+            if (e !is SessionExpiredException &&
+                e !is ApiRateLimitException &&
+                RoundTripMatcher.isInapplicableRouteErrorMessage(e.message)
+            ) {
+                val off = db.officialRouteDao().getOne(fromCity, toCity)
+                if (off?.dataSource == ROUTE_SOURCE_BUNDLED) {
+                    invalidateAndDeleteRoute(fromCity, toCity, e.message ?: "当前畅飞卡不适用该航线")
+                    throw RouteInvalidatedException(fromCity, toCity, "当前畅飞卡不适用该航线")
+                }
+            }
+            throw e
+        }
         val now = System.currentTimeMillis()
         val entities = liveList.map { s ->
             SeatSnapshotEntity(
@@ -1065,25 +1406,14 @@ class FlightRepository(
     }
 
     /**
-     * 切换名下不同畅飞卡 (scgTid) 时清理与具体卡片绑定的航线、日历和余票缓存（保留官方城市机场目录）。
+     * 切换名下不同畅飞卡 (scgTid) 时清理与旧卡片绑定的日历、余票及墓碑记录，并恢复内置基准航线供新卡校验。
      */
     suspend fun clearCardSpecificCaches() = withContext(Dispatchers.IO) {
-        db.withTransaction {
-            db.calendarCacheDao().clearAll()
-            db.seatSnapshotDao().clearAll()
-            db.officialRouteDao().clearAll()
-            db.flightRouteDao().clearAll()
-        }
+        ensureBundledNetworkLoaded(forceReset = true)
     }
 
     suspend fun clearAllCaches() = withContext(Dispatchers.IO) {
-        db.withTransaction {
-            db.calendarCacheDao().clearAll()
-            db.seatSnapshotDao().clearAll()
-            db.officialRouteDao().clearAll()
-            db.flightRouteDao().clearAll()
-            db.officialAirportDao().clearAll()
-        }
         authPrefs.setHomeCity("")
+        ensureBundledNetworkLoaded(forceReset = true)
     }
 }

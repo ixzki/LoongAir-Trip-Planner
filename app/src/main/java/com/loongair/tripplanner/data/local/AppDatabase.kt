@@ -16,9 +16,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         TripPlanEntity::class,
         ReminderEntity::class,
         OfficialRouteEntity::class,
-        OfficialAirportEntity::class
+        OfficialAirportEntity::class,
+        InvalidatedRouteEntity::class
     ],
-    version = 5,
+    version = 6,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -30,6 +31,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun reminderDao(): ReminderDao
     abstract fun officialRouteDao(): OfficialRouteDao
     abstract fun officialAirportDao(): OfficialAirportDao
+    abstract fun invalidatedRouteDao(): InvalidatedRouteDao
 
     companion object {
         @Volatile
@@ -128,7 +130,35 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        internal val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
+        /**
+         * v5 -> v6 无损迁移：
+         * 1. 为 official_routes 增加 dataSource 列区分内置基准 ("bundled") 与实时官方校验 ("official")；
+         * 2. 新增 invalidated_routes 墓碑表，确保被检测失效并自动剔除的内置航线不会在重启时复活。
+         */
+        internal val MIGRATION_5_6 = object : Migration(5, 6) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL("ALTER TABLE `official_routes` ADD COLUMN `dataSource` TEXT NOT NULL DEFAULT 'official'")
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `invalidated_routes` (
+                        `fromCity` TEXT NOT NULL,
+                        `toCity` TEXT NOT NULL,
+                        `reason` TEXT NOT NULL,
+                        `invalidatedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`fromCity`, `toCity`)
+                    )
+                    """.trimIndent()
+                )
+            }
+        }
+
+        internal val ALL_MIGRATIONS = arrayOf(
+            MIGRATION_1_2,
+            MIGRATION_2_3,
+            MIGRATION_3_4,
+            MIGRATION_4_5,
+            MIGRATION_5_6
+        )
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {
