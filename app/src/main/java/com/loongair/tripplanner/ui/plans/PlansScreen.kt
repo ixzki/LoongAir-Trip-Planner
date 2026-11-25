@@ -191,7 +191,8 @@ fun PlansScreen(
             contentPadding = PaddingValues(bottom = 24.dp),
             verticalArrangement = Arrangement.spacedBy(AppSpace.cardGap)
         ) {
-            // 1. 沉浸式头图 + 悬浮权限状态卡
+            // 1. 沉浸式头图：权限未就绪时提示开启权限；已就绪则隐藏权限卡，直接放首张行程计划或空态卡
+            val permissionsReady = hasNotifPerm && canExactAlarm
             item {
                 HeroHeaderOverlapContainer(
                     subtitle = "${plans.size} 个行程计划 · $pendingCount 个待触发抢票闹钟",
@@ -212,103 +213,126 @@ fun PlansScreen(
                         )
                     }
                 ) {
-                    SoftCard(
-                        cornerRadius = AppRadii.card,
-                        floating = true,
-                        borderColor = if (!hasNotifPerm || !canExactAlarm) p.warning.copy(alpha = 0.4f) else null,
-                        contentPadding = 16.dp
-                    ) {
-                        Row(
-                            modifier = Modifier.fillMaxWidth(),
-                            verticalAlignment = Alignment.CenterVertically,
-                            horizontalArrangement = Arrangement.SpaceBetween
-                        ) {
-                            Row(
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.spacedBy(12.dp),
-                                modifier = Modifier.weight(1f)
+                    when {
+                        !permissionsReady -> {
+                            SoftCard(
+                                cornerRadius = AppRadii.card,
+                                floating = true,
+                                borderColor = p.warning.copy(alpha = 0.4f),
+                                contentPadding = 16.dp
                             ) {
-                                TintedIconBadge(
-                                    icon = if (hasNotifPerm && canExactAlarm) Icons.Default.NotificationsActive else Icons.Default.Warning,
-                                    tint = if (hasNotifPerm && canExactAlarm) p.success else p.warning,
-                                    background = if (hasNotifPerm && canExactAlarm) p.successBg else p.warningBg,
-                                    size = 38.dp,
-                                    iconSize = 20.dp
-                                )
-                                Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                    Text(
-                                        if (hasNotifPerm && canExactAlarm) "抢票闹钟权限就绪" else "请开启通知与精确闹钟权限",
-                                        style = LoongType.rowLabel.copy(fontWeight = FontWeight.SemiBold),
-                                        color = p.textPrimary
-                                    )
-                                    Text(
-                                        if (hasNotifPerm && canExactAlarm) "支持息屏唤醒与重启自动恢复，可同步手机日历"
-                                        else "开启后才能准点提醒提前 30 天开抢",
-                                        style = LoongType.footnote.copy(fontSize = 12.5.sp),
-                                        color = p.textSecondary
-                                    )
-                                }
-                            }
-                            Spacer(Modifier.width(8.dp))
-                            Box(
-                                modifier = Modifier
-                                    .pressScale(
-                                        scaleDown = AppPressScale.CONTROL,
-                                        haptic = true,
-                                        onClick = {
-                                            if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                                notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                            } else {
-                                                viewModel.sendTestNotification()
-                                            }
+                                Row(
+                                    modifier = Modifier.fillMaxWidth(),
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.SpaceBetween
+                                ) {
+                                    Row(
+                                        verticalAlignment = Alignment.CenterVertically,
+                                        horizontalArrangement = Arrangement.spacedBy(12.dp),
+                                        modifier = Modifier.weight(1f)
+                                    ) {
+                                        TintedIconBadge(
+                                            icon = Icons.Default.Warning,
+                                            tint = p.warning,
+                                            background = p.warningBg,
+                                            size = 38.dp,
+                                            iconSize = 20.dp
+                                        )
+                                        Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                            Text(
+                                                "请开启通知与精确闹钟权限",
+                                                style = LoongType.rowLabel.copy(fontWeight = FontWeight.SemiBold),
+                                                color = p.textPrimary
+                                            )
+                                            Text(
+                                                "开启后才能准点提醒提前 30 天开抢",
+                                                style = LoongType.footnote.copy(fontSize = 12.5.sp),
+                                                color = p.textSecondary
+                                            )
                                         }
-                                    )
-                                    .clip(RoundedCornerShape(AppRadii.full))
-                                    .background(p.primarySoftBg)
-                                    .padding(horizontal = 12.dp, vertical = 7.dp),
-                                contentAlignment = Alignment.Center
-                            ) {
-                                Text("测试提醒", style = LoongType.caption, color = p.primary)
+                                    }
+                                    Spacer(Modifier.width(8.dp))
+                                    Box(
+                                        modifier = Modifier
+                                            .pressScale(
+                                                scaleDown = AppPressScale.CONTROL,
+                                                haptic = true,
+                                                onClick = {
+                                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                                                    } else {
+                                                        viewModel.sendTestNotification()
+                                                    }
+                                                }
+                                            )
+                                            .clip(RoundedCornerShape(AppRadii.full))
+                                            .background(p.primarySoftBg)
+                                            .padding(horizontal = 12.dp, vertical = 7.dp),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text("测试提醒", style = LoongType.caption, color = p.primary)
+                                    }
+                                }
+
+                                Spacer(Modifier.height(12.dp))
+                                Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                        OutlinedButton(
+                                            onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                            shape = RoundedCornerShape(12.dp),
+                                            border = BorderStroke(1.dp, p.separator),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier.bounceOnTouch()
+                                        ) {
+                                            Text("允许通知", style = LoongType.footnoteStrong)
+                                        }
+                                    }
+                                    if (!canExactAlarm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+                                        OutlinedButton(
+                                            onClick = {
+                                                val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
+                                                    data = Uri.parse("package:${context.packageName}")
+                                                }
+                                                runCatching { context.startActivity(intent) }
+                                            },
+                                            shape = RoundedCornerShape(12.dp),
+                                            border = BorderStroke(1.dp, p.separator),
+                                            contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
+                                            modifier = Modifier.bounceOnTouch()
+                                        ) {
+                                            Text("开启精确闹钟", style = LoongType.footnoteStrong)
+                                        }
+                                    }
+                                }
                             }
                         }
 
-                        if (!hasNotifPerm || !canExactAlarm) {
-                            Spacer(Modifier.height(12.dp))
-                            Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    OutlinedButton(
-                                        onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = BorderStroke(1.dp, p.separator),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                        modifier = Modifier.bounceOnTouch()
-                                    ) {
-                                        Text("允许通知", style = LoongType.footnoteStrong)
-                                    }
-                                }
-                                if (!canExactAlarm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                                    OutlinedButton(
-                                        onClick = {
-                                            val intent = Intent(Settings.ACTION_REQUEST_SCHEDULE_EXACT_ALARM).apply {
-                                                data = Uri.parse("package:${context.packageName}")
-                                            }
-                                            runCatching { context.startActivity(intent) }
-                                        },
-                                        shape = RoundedCornerShape(12.dp),
-                                        border = BorderStroke(1.dp, p.separator),
-                                        contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
-                                        modifier = Modifier.bounceOnTouch()
-                                    ) {
-                                        Text("开启精确闹钟", style = LoongType.footnoteStrong)
-                                    }
-                                }
-                            }
+                        plans.isEmpty() -> {
+                            EmptyPlansCard(floating = true)
+                        }
+
+                        else -> {
+                            val firstPlan = plans.first()
+                            TripPlanCard(
+                                plan = firstPlan,
+                                reminders = remindersByPlan[firstPlan.id].orEmpty(),
+                                canExactAlarm = canExactAlarm,
+                                isHighlighted = highlightedPlanId == firstPlan.id,
+                                isRechecking = recheckingId == firstPlan.id,
+                                floating = true,
+                                onRecheckSeats = { viewModel.recheckPlanLiveSeats(firstPlan) },
+                                onAddReminderClick = { reminderTargetPlan = firstPlan },
+                                onExportCalendar = { exportPlanToSystemCalendar(context, firstPlan) },
+                                onDeletePlan = { viewModel.deleteTripPlan(firstPlan) },
+                                onToggleReminder = { viewModel.toggleReminder(it) },
+                                onDeleteReminder = { viewModel.deleteReminder(it) }
+                            )
                         }
                     }
                 }
             }
 
-            if (plans.isNotEmpty()) {
+            if (!permissionsReady && plans.isNotEmpty()) {
                 item {
                     SectionTitleRow(
                         title = "我的行程计划",
@@ -320,34 +344,15 @@ fun PlansScreen(
             }
 
             // 2. 行程计划列表
-            if (plans.isEmpty()) {
+            val remainingPlans = if (permissionsReady) plans.drop(1) else plans
+            if (!permissionsReady && plans.isEmpty()) {
                 item {
                     Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
-                        SoftCard(contentPadding = 24.dp) {
-                            Column(
-                                modifier = Modifier.fillMaxWidth(),
-                                horizontalAlignment = Alignment.CenterHorizontally,
-                                verticalArrangement = Arrangement.spacedBy(10.dp)
-                            ) {
-                                TintedIconBadge(
-                                    icon = Icons.Default.AlarmAdd,
-                                    size = 52.dp,
-                                    iconSize = 26.dp,
-                                    cornerRadius = 16.dp
-                                )
-                                Text("还没有保存的往返行程计划", style = LoongType.headline, color = p.textPrimary)
-                                Text(
-                                    "在「往返」页挑选心仪的周末航班并点击「加入行程」，即可在这里设定放票开抢闹钟与系统日历提醒。",
-                                    style = LoongType.footnote,
-                                    color = p.textSecondary,
-                                    textAlign = TextAlign.Center
-                                )
-                            }
-                        }
+                        EmptyPlansCard(floating = false)
                     }
                 }
-            } else {
-                items(plans, key = { it.id }) { plan ->
+            } else if (remainingPlans.isNotEmpty()) {
+                items(remainingPlans, key = { it.id }) { plan ->
                     val planReminders = remindersByPlan[plan.id].orEmpty()
                     Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                         TripPlanCard(
@@ -406,12 +411,43 @@ fun PlansScreen(
 }
 
 @Composable
+private fun EmptyPlansCard(floating: Boolean) {
+    val p = LocalLoongPalette.current
+    SoftCard(
+        cornerRadius = AppRadii.card,
+        floating = floating,
+        contentPadding = 24.dp
+    ) {
+        Column(
+            modifier = Modifier.fillMaxWidth(),
+            horizontalAlignment = Alignment.CenterHorizontally,
+            verticalArrangement = Arrangement.spacedBy(10.dp)
+        ) {
+            TintedIconBadge(
+                icon = Icons.Default.AlarmAdd,
+                size = 52.dp,
+                iconSize = 26.dp,
+                cornerRadius = 16.dp
+            )
+            Text("还没有保存的往返行程计划", style = LoongType.headline, color = p.textPrimary)
+            Text(
+                "在「往返」页挑选心仪的周末航班并点击「加入行程」，即可在这里设定放票开抢闹钟与系统日历提醒。",
+                style = LoongType.footnote,
+                color = p.textSecondary,
+                textAlign = TextAlign.Center
+            )
+        }
+    }
+}
+
+@Composable
 private fun TripPlanCard(
     plan: TripPlanEntity,
     reminders: List<ReminderEntity>,
     canExactAlarm: Boolean,
     isHighlighted: Boolean,
     isRechecking: Boolean,
+    floating: Boolean = false,
     onRecheckSeats: () -> Unit,
     onAddReminderClick: () -> Unit,
     onExportCalendar: () -> Unit,
@@ -423,6 +459,7 @@ private fun TripPlanCard(
     val timeFmt = remember { DateTimeFormatter.ofPattern("MM-dd HH:mm") }
     SoftCard(
         cornerRadius = AppRadii.card,
+        floating = floating,
         borderColor = if (isHighlighted) p.primary else null,
         contentPadding = 16.dp
     ) {
