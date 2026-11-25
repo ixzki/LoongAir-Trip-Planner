@@ -1,5 +1,6 @@
 package com.loongair.tripplanner
 
+import com.loongair.tripplanner.alarm.NotificationHelper
 import com.loongair.tripplanner.data.local.FlightRouteEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
@@ -344,6 +345,17 @@ class SecondPassFixesTest {
         assertEquals(-4, RoundTripMatcher.normalizeCalendarStatus(-4, LocalDate.of(2026, 11, 27), today))
         // 官方屏蔽窗口外即使未同步（null）也归为 -2（不可用）
         assertEquals(-2, RoundTripMatcher.normalizeCalendarStatus(null, LocalDate.of(2027, 2, 1), today))
+    }
+
+    @Test
+    fun notificationHelper_sanitizesEmojiTitlesAndResolvesBadges() {
+        assertEquals("长龙畅飞卡测试提醒", NotificationHelper.sanitizeTitle("⏰ 长龙畅飞卡测试提醒"))
+        assertEquals("即将截止兑换：杭州 ⇄ 郑州", NotificationHelper.sanitizeTitle("⚠️ 即将截止兑换：杭州 ⇄ 郑州"))
+        assertEquals("刷畅飞卡余票：杭州 ⇄ 郑州", NotificationHelper.sanitizeTitle("🔎 刷畅飞卡余票：杭州 ⇄ 郑州"))
+        assertEquals("测试通知", NotificationHelper.resolveBadgeLabel("长龙畅飞卡测试提醒"))
+        assertEquals("兑换截止", NotificationHelper.resolveBadgeLabel("即将截止兑换：杭州 ⇄ 郑州"))
+        assertEquals("余票提醒", NotificationHelper.resolveBadgeLabel("刷畅飞卡余票：杭州 ⇄ 郑州"))
+        assertEquals("开抢提醒", NotificationHelper.resolveBadgeLabel("准备抢去程票：杭州 ⇄ 郑州"))
     }
 
     companion object {

@@ -909,8 +909,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             context = app,
             reminderId = 999999L,
             planId = plans.value.firstOrNull()?.id ?: -1L,
-            title = "⏰ 长龙畅飞卡测试提醒",
-            message = "通知权限正常！抢票闹钟到点时会以同样的高优先级提醒唤醒你。"
+            title = "长龙畅飞卡测试提醒",
+            message = "通知权限已就绪，抢票闹钟到点时会以同款高优先级卡片提醒你。"
         )
         showMessage("已发送一条测试通知，请查看手机顶部状态栏")
     }

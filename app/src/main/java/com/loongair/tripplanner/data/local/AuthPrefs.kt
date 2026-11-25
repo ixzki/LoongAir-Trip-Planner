@@ -237,7 +237,7 @@ class AuthPrefs(
         private const val KEY_CERT_NO = "cert_number"
         private const val KEY_UPDATED_AT = "updated_at"
         private const val KEY_HOME_CITY = "home_city"
-        private const val KEY_THEME_STYLE = "theme_style"
+        const val KEY_THEME_STYLE = "theme_style"
         private const val KEY_CARDS_JSON = "detected_cards_json"
         private const val KEY_CARD_DIAG = "card_diagnostic"
         private const val KEY_BUNDLED_VERSION = "bundled_network_version"

@@ -767,7 +767,7 @@ private fun AddReminderDialog(
                     onClick = {
                         val dt = LocalDateTime.of(customDate, LocalTime.of(customHour, customMinute))
                         val millis = dt.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
-                        val title = "⏰ 抢票提醒：${plan.fromCity} ⇄ ${plan.toCity}"
+                        val title = "抢票提醒：${plan.fromCity} ⇄ ${plan.toCity}"
                         val msg = "去程 ${plan.outboundDate} ${plan.outboundFlightNo}(${plan.outboundDepTime}) / 返程 ${plan.returnDate} ${plan.returnFlightNo}(${plan.returnDepTime})，请及时查票兑换！"
                         onAddReminder(millis, customLabel.ifBlank { "自定义提醒" }, title, msg)
                     },

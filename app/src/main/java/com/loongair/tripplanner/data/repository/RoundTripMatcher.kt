@@ -682,8 +682,8 @@ object RoundTripMatcher {
                 label = "去程开抢前5分钟",
                 description = "${outDate.minusDays(30)} 09:55（长龙畅飞卡通常提前30天10:00放票）",
                 triggerAtMillis = outOpenMillis,
-                title = "⏰ 准备抢去程票：$routeTitle",
-                message = "去程 ${plan.outboundDate} ${plan.outboundFlightNo} (${plan.outboundDepTime}起飞) 即将开放兑换，请打开长龙航空准备抢票！",
+                title = "准备抢去程票：$routeTitle",
+                message = "去程 ${plan.outboundDate} ${plan.outboundFlightNo} (${plan.outboundDepTime}起飞) 即将开放兑换，请打开长龙航空准备抢票。",
                 isInPast = outOpenMillis <= nowMillis
             )
         )
@@ -696,8 +696,8 @@ object RoundTripMatcher {
                     label = "返程开抢前5分钟",
                     description = "${retDate.minusDays(30)} 09:55（返程放票前5分钟提醒）",
                     triggerAtMillis = retOpenMillis,
-                    title = "⏰ 准备抢返程票：$routeTitle",
-                    message = "返程 ${plan.returnDate} ${plan.returnFlightNo} (${plan.returnDepTime}起飞) 即将开放兑换，别忘了锁定返程！",
+                    title = "准备抢返程票：$routeTitle",
+                    message = "返程 ${plan.returnDate} ${plan.returnFlightNo} (${plan.returnDepTime}起飞) 即将开放兑换，别忘了锁定返程。",
                     isInPast = retOpenMillis <= nowMillis
                 )
             )
@@ -710,8 +710,8 @@ object RoundTripMatcher {
                 label = "兑换截止前提醒",
                 description = "${outDate.minusDays(4)} 20:00（距起飞前3天截止还剩1晚）",
                 triggerAtMillis = cutoffMillis,
-                title = "⚠️ 即将截止兑换：$routeTitle",
-                message = "${plan.outboundDate} 出发的行程即将到达提前3天预约截止线，请尽快确认出票！",
+                title = "即将截止兑换：$routeTitle",
+                message = "${plan.outboundDate} 出发的行程即将到达提前 3 天预约截止线，请尽快确认出票。",
                 isInPast = cutoffMillis <= nowMillis
             )
         )
@@ -723,7 +723,7 @@ object RoundTripMatcher {
                 label = "明早09:55刷余票",
                 description = "${LocalDate.now(zoneId).plusDays(1)} 09:55（适合蹲临时退改回流票）",
                 triggerAtMillis = tomorrowMorning,
-                title = "🔎 刷畅飞卡余票：$routeTitle",
+                title = "刷畅飞卡余票：$routeTitle",
                 message = "点击查看 ${plan.outboundDate} 去 / ${plan.returnDate} 回 最新畅飞卡余票情况。",
                 isInPast = tomorrowMorning <= nowMillis
             )

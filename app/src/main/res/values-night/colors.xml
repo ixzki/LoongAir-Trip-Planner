@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <color name="notif_text_primary">#F5F0EE</color>
+    <color name="notif_text_secondary">#C4B8B5</color>
+
+    <color name="notif_pill_bg_crimson">#4A1D1F</color>
+    <color name="notif_pill_fg_crimson">#FFB4AB</color>
+    <color name="notif_detail_bg_crimson">#2B2120</color>
+    <color name="notif_detail_stroke_crimson">#5A2A27</color>
+
+    <color name="notif_pill_bg_mist">#1C344D</color>
+    <color name="notif_pill_fg_mist">#8EC8FF</color>
+    <color name="notif_detail_bg_mist">#1E2631</color>
+    <color name="notif_detail_stroke_mist">#2B4666</color>
+</resources>
