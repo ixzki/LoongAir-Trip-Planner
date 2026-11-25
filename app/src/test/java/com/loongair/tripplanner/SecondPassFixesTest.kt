@@ -329,6 +329,23 @@ class SecondPassFixesTest {
         assertEquals("长春", stateChangchun.filteredRoutes.first().fromCity)
     }
 
+    @Test
+    fun normalizeCalendarStatus_handlesCutoffBlackoutAndNoFlightConsistently() {
+        val today = LocalDate.of(2026, 11, 25)
+        // 3 天内（11-25、11-26、11-27）即使原始为 -1 或旧缓存 1/0/null，也必须显示 -3（已截止）
+        assertEquals(-3, RoundTripMatcher.normalizeCalendarStatus(-1, LocalDate.of(2026, 11, 25), today))
+        assertEquals(-3, RoundTripMatcher.normalizeCalendarStatus(1, LocalDate.of(2026, 11, 26), today))
+        assertEquals(-3, RoundTripMatcher.normalizeCalendarStatus(-1, LocalDate.of(2026, 11, 27), today))
+        assertEquals(-3, RoundTripMatcher.normalizeCalendarStatus(null, LocalDate.of(2026, 11, 27), today))
+        // 满 3 天（11-28）保留原始状态
+        assertEquals(-1, RoundTripMatcher.normalizeCalendarStatus(-1, LocalDate.of(2026, 11, 28), today))
+        assertEquals(1, RoundTripMatcher.normalizeCalendarStatus(1, LocalDate.of(2026, 11, 28), today))
+        // 无航班 (-4) 保留 -4
+        assertEquals(-4, RoundTripMatcher.normalizeCalendarStatus(-4, LocalDate.of(2026, 11, 27), today))
+        // 官方屏蔽窗口外即使未同步（null）也归为 -2（不可用）
+        assertEquals(-2, RoundTripMatcher.normalizeCalendarStatus(null, LocalDate.of(2027, 2, 1), today))
+    }
+
     companion object {
         private val testJson = Json { ignoreUnknownKeys = true }
     }

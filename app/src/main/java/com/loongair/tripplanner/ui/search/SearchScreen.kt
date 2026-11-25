@@ -408,10 +408,14 @@ fun SearchScreen(
                                 )
                             }
 
-                            val isGlobalBlocked = state.outboundDate.toString() in networkState.globalUnavailableDates ||
-                                state.returnDate.toString() in networkState.globalUnavailableDates
+                            val isGlobalBlocked =
+                                !RoundTripMatcher.isWithinOfficialChangfeiDates(state.outboundDate) ||
+                                    !RoundTripMatcher.isWithinOfficialChangfeiDates(state.returnDate) ||
+                                    state.outboundDate.toString() in networkState.globalUnavailableDates ||
+                                    state.returnDate.toString() in networkState.globalUnavailableDates
                             val (badgeText, badgeBg, badgeFg) = when {
                                 isGlobalBlocked -> Triple("含官方屏蔽不可用日", p.dangerBg, p.danger)
+                                daysUntilOut < 0 -> Triple("出发日已过期·不可兑", p.dangerBg, p.danger)
                                 daysUntilOut < 3 -> Triple("距出发${daysUntilOut}天·不足3天不可兑", p.dangerBg, p.danger)
                                 daysUntilOut <= 30 -> Triple("距出发${daysUntilOut}天·可兑窗口", p.successBg, p.success)
                                 else -> Triple("距开抢约${daysUntilOut - 30}天·适合定闹钟", p.warningBg, p.warning)

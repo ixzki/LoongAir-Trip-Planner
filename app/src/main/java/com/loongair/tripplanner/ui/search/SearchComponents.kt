@@ -321,14 +321,14 @@ internal fun RoundTripCandidateCard(
 private fun CalendarStatusPill(prefix: String, status: Int?, liveMaxSeats: Int?) {
     val p = LocalLoongPalette.current
     val (text, bg, fg) = when {
+        status == -2 -> Triple("${prefix}不可用", p.dangerBg, p.danger)
+        status == -3 -> Triple("${prefix}已截止", p.dangerBg, p.danger)
+        status == -4 -> Triple("${prefix}无航班", p.subtleSurface, p.textSecondary)
         liveMaxSeats != null && liveMaxSeats > 0 -> Triple("${prefix}余${liveMaxSeats}张", p.successBg, p.success)
         liveMaxSeats != null && liveMaxSeats == 0 -> Triple("${prefix}畅飞无票", p.dangerBg, p.danger)
         status == 1 -> Triple("${prefix}可兑", p.successBg, p.success)
         status == 0 -> Triple("${prefix}已兑完", p.dangerBg, p.danger)
         status == -1 -> Triple("${prefix}未开放", p.warningBg, p.warning)
-        status == -2 -> Triple("${prefix}不可用", p.dangerBg, p.danger)
-        status == -3 -> Triple("${prefix}已截止", p.dangerBg, p.danger)
-        status == -4 -> Triple("${prefix}无航班", p.subtleSurface, p.textSecondary)
         else -> Triple("${prefix}待查", p.subtleSurface, p.textSecondary)
     }
     TonePillBadge(

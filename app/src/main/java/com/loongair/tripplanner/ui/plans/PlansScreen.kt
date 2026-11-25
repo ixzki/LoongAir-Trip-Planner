@@ -476,7 +476,7 @@ private fun TripPlanCard(
                             color = p.textPrimary
                         )
                     }
-                    SeatCountTag(plan.outboundLeftCount)
+                    SeatCountTag(plan.outboundLeftCount, plan.outboundDate)
                 }
                 HorizontalDivider(thickness = AppSpace.hairline, color = p.separator)
                 Row(
@@ -492,7 +492,7 @@ private fun TripPlanCard(
                             color = p.textPrimary
                         )
                     }
-                    SeatCountTag(plan.returnLeftCount)
+                    SeatCountTag(plan.returnLeftCount, plan.returnDate)
                 }
                 plan.lastVerifiedAt?.let { ts ->
                     val verifiedStr = Instant.ofEpochMilli(ts)
@@ -637,9 +637,20 @@ private fun TripPlanCard(
 }
 
 @Composable
-private fun SeatCountTag(count: Int?) {
+private fun SeatCountTag(count: Int?, flightDateStr: String) {
     val p = LocalLoongPalette.current
+    val today = ChinaClock.today()
+    val parsedDate = remember(flightDateStr) { runCatching { LocalDate.parse(flightDateStr) }.getOrNull() }
+    val normalized = parsedDate?.let {
+        RoundTripMatcher.normalizeCalendarStatus(
+            rawStatus = null,
+            date = it,
+            today = today
+        )
+    }
     val (txt, bg, fg) = when {
+        normalized == -2 -> Triple("不可用", p.dangerBg, p.danger)
+        normalized == -3 -> Triple("已截止", p.dangerBg, p.danger)
         count == null -> Triple("未核验", p.cardBg, p.textTertiary)
         count > 0 -> Triple("畅飞余 $count", p.successBg, p.success)
         else -> Triple("暂无余票", p.dangerBg, p.danger)

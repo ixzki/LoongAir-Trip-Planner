@@ -427,6 +427,25 @@ object RoundTripMatcher {
     ): Pair<LocalDate, LocalDate> = resolveTemplateDatePairs(template, baseDate).first()
 
     /**
+     * 将接口原始或本地缓存日历状态归一化为界面语义状态：
+     * - 官方适用窗口外（或全局屏蔽期）且未显式放票/约满 (1/0) 且非无航班 (-4) -> -2（不可用）
+     * - 距起飞不足 3 天（已过前 3 天 23:40 兑换截止期）且非无航班 (-4) 与不可用 (-2) -> -3（已截止）
+     */
+    fun normalizeCalendarStatus(
+        rawStatus: Int?,
+        date: LocalDate,
+        today: LocalDate = ChinaClock.today(),
+        globalUnavailableDates: Set<String> = emptySet()
+    ): Int? {
+        if (rawStatus == -4) return -4
+        val isBlackout = !isWithinOfficialChangfeiDates(date) || date.toString() in globalUnavailableDates
+        if (isBlackout && rawStatus != 1 && rawStatus != 0) return -2
+        if (rawStatus == -2) return -2
+        if (date.isBefore(today.plusDays(3))) return -3
+        return rawStatus
+    }
+
+    /**
      * 离线+缓存综合往返行程配对引擎
      */
     fun matchRoundTrips(
@@ -436,7 +455,9 @@ object RoundTripMatcher {
         outboundCalendars: Map<String, CalendarCacheEntity>,
         inboundCalendars: Map<String, CalendarCacheEntity>,
         seatOverlay: Map<String, List<SeatSnapshotEntity>>,
-        cityMetaMap: Map<String, CityMeta>
+        cityMetaMap: Map<String, CityMeta>,
+        today: LocalDate = ChinaClock.today(),
+        globalUnavailableDates: Set<String> = emptySet()
     ): List<RoundTripCandidate> {
         val outByDest = allOutboundRoutes
             .filter { r ->
@@ -461,8 +482,18 @@ object RoundTripMatcher {
         val retDateStr = query.returnDate.toString()
 
         val candidates = commonDestinations.mapNotNull { dest ->
-            val outCal = outboundCalendars[dest]?.status
-            val retCal = inboundCalendars[dest]?.status
+            val outCal = normalizeCalendarStatus(
+                outboundCalendars[dest]?.status,
+                query.outboundDate,
+                today,
+                globalUnavailableDates
+            )
+            val retCal = normalizeCalendarStatus(
+                inboundCalendars[dest]?.status,
+                query.returnDate,
+                today,
+                globalUnavailableDates
+            )
             if (query.onlyCalendarAvailable && !(outCal == 1 && retCal == 1)) {
                 return@mapNotNull null
             }

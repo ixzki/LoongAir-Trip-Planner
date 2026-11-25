@@ -86,7 +86,8 @@ class RoundTripMatcherTest {
             outboundCalendars = outCals,
             inboundCalendars = inCals,
             seatOverlay = emptyMap(),
-            cityMetaMap = emptyMap()
+            cityMetaMap = emptyMap(),
+            today = LocalDate.of(2026, 11, 24)
         )
 
         assertEquals(2, results.size)
@@ -98,6 +99,33 @@ class RoundTripMatcherTest {
         assertEquals(1, results[1].outboundFlights.size)
         assertEquals("GJ8801", results[1].outboundFlights[0].flightNo)
         assertTrue(results[1].maxStayHours in 40..46)
+
+        // 当日期进入起飞前 3 天内（如 today=2026-11-25 时搜索 2026-11-27），原始 -1 或过期缓存均应归一化为 -3（已截止）
+        val cutoffResults = RoundTripMatcher.matchRoundTrips(
+            query = RoundTripQuery(
+                originCity = "杭州",
+                outboundDate = friday,
+                outStartMinute = 18 * 60,
+                outEndMinute = 23 * 60 + 59,
+                returnDate = sunday,
+                retStartMinute = 12 * 60,
+                retEndMinute = 23 * 60 + 59
+            ),
+            allOutboundRoutes = outbound,
+            allInboundRoutes = inbound,
+            outboundCalendars = mapOf(
+                "广州" to CalendarCacheEntity("杭州", "广州", friday.toString(), -1, 0L),
+                "成都" to CalendarCacheEntity("杭州", "成都", friday.toString(), 1, 0L)
+            ),
+            inboundCalendars = inCals,
+            seatOverlay = emptyMap(),
+            cityMetaMap = emptyMap(),
+            today = LocalDate.of(2026, 11, 25)
+        )
+        assertEquals(-3, cutoffResults.first { it.destinationCity == "广州" }.outCalendarStatus)
+        assertEquals(-3, cutoffResults.first { it.destinationCity == "成都" }.outCalendarStatus)
+        // 周日 2026-11-29 距 2026-11-25 为 4 天（>= 3天），保持原始状态 1
+        assertEquals(1, cutoffResults.first { it.destinationCity == "广州" }.retCalendarStatus)
     }
 
     @Test

@@ -1243,6 +1243,7 @@ class FlightRepository(
         val metaMap = getSyncedCityMetadata().associateBy { it.city }
         val pairs = query.datePairs.ifEmpty { listOf(query.outboundDate to query.returnDate) }.distinct()
 
+        val globalUnavail = getGlobalUnavailableDates()
         val allCandidates = mutableListOf<RoundTripCandidate>()
         for ((outDate, retDate) in pairs) {
             val outDateStr = outDate.toString()
@@ -1272,7 +1273,8 @@ class FlightRepository(
                     outboundCalendars = outCals,
                     inboundCalendars = inCals,
                     seatOverlay = seatOverlay,
-                    cityMetaMap = metaMap
+                    cityMetaMap = metaMap,
+                    globalUnavailableDates = globalUnavail
                 )
             )
         }

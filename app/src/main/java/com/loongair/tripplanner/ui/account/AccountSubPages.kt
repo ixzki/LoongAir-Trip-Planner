@@ -317,8 +317,6 @@ internal fun SettingsSubPage(
     onSelectTheme: (AppThemeStyle) -> Unit,
     onResetTemplates: () -> Unit,
     onClearCache: () -> Unit,
-    onOpenDiagnostic: () -> Unit,
-    onOpenManual: () -> Unit,
     onOpenAbout: () -> Unit,
     onLogout: () -> Unit
 ) {
@@ -374,16 +372,6 @@ internal fun SettingsSubPage(
                         icon = Icons.Default.DeleteOutline,
                         title = "清空日历缓存并恢复内置航线库",
                         onClick = onClearCache
-                    )
-                    SettingsRowItem(
-                        icon = Icons.Default.BugReport,
-                        title = "卡包诊断（已脱敏）",
-                        onClick = onOpenDiagnostic
-                    )
-                    SettingsRowItem(
-                        icon = Icons.Default.Key,
-                        title = "手动凭证 / scgTid",
-                        onClick = onOpenManual
                     )
                     SettingsRowItem(
                         icon = Icons.Default.Info,
@@ -452,11 +440,11 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                     .fillMaxWidth()
                     .padding(top = 6.dp),
                 horizontalAlignment = Alignment.CenterHorizontally,
-                verticalArrangement = Arrangement.spacedBy(12.dp)
+                verticalArrangement = Arrangement.spacedBy(10.dp)
             ) {
                 Box(
                     modifier = Modifier
-                        .size(88.dp)
+                        .size(84.dp)
                         .chhersShadow(
                             cornerRadius = AppRadii.lg,
                             floating = true,
@@ -472,11 +460,16 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                         imageVector = Icons.Default.Flight,
                         contentDescription = null,
                         tint = Color.White,
-                        modifier = Modifier.size(44.dp)
+                        modifier = Modifier.size(42.dp)
                     )
                 }
                 Text(
-                    text = "版本 ${BuildConfig.VERSION_NAME}",
+                    text = "长龙畅飞规划",
+                    style = LoongType.headline,
+                    color = p.textPrimary
+                )
+                Text(
+                    text = "v${BuildConfig.VERSION_NAME}",
                     style = LoongType.subhead.copy(fontFeatureSettings = "tnum"),
                     color = p.textSecondary
                 )
@@ -488,18 +481,29 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = AppSpace.groupInset),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                GroupedSectionLabel("介绍")
+                GroupedSectionLabel("应用说明")
                 SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
-                    Text(
-                        text = "长龙畅飞规划是专为长龙航空畅飞卡旅客打造的纯本地 Android 助手，支持全国随心飞航网地图浏览、周末与指定日期往返智能配对、近 40 天放票日历核验与精确抢票闹钟提醒。",
-                        style = LoongType.body,
-                        color = p.textPrimary
+                    AboutInfoBlock(
+                        title = "主要功能",
+                        content = "随心飞全网航线浏览、往返智能配对、近 40 天放票日历与抢票闹钟提醒。"
                     )
-                    Spacer(Modifier.height(10.dp))
-                    Text(
-                        text = "所有会话凭据、卡包信息、缓存与行程计划均仅保存在您的手机本地（敏感凭据通过 AndroidKeyStore 硬件级 AES-256-GCM 加密），不经过任何第三方云服务器。",
-                        style = LoongType.body,
-                        color = p.textPrimary
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        thickness = AppSpace.hairline,
+                        color = p.separator
+                    )
+                    AboutInfoBlock(
+                        title = "数据隐私",
+                        content = "凭据、缓存与行程计划仅保存在本机并加密存储，不上传第三方服务器。"
+                    )
+                    HorizontalDivider(
+                        modifier = Modifier.padding(vertical = 12.dp),
+                        thickness = AppSpace.hairline,
+                        color = p.separator
+                    )
+                    AboutInfoBlock(
+                        title = "免责声明",
+                        content = "本工具与浙江长龙航空无官方关联，可兑名额、适用日期及航班时刻请以官方渠道为准。"
                     )
                 }
             }
@@ -510,18 +514,33 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                 modifier = Modifier.padding(horizontal = AppSpace.groupInset),
                 verticalArrangement = Arrangement.spacedBy(8.dp)
             ) {
-                GroupedSectionLabel("致谢与免责声明")
+                GroupedSectionLabel("开源参考")
                 SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
                     Text(
-                        text = "• 开源参考：长龙官方接口协议参考开源项目 eureka-wu/clairline（MIT License）；界面动效、字阶与视觉语言致敬开源项目 zzNaLogiczz/chher-public。\n\n" +
-                            "• 航网管理：应用内置经官方接口核验的全网畅飞卡基准航线与时刻，新用户免全量拉取即可规划；登录查询或同步时若检测到某条内置航线已停航或当前卡片不适用，会自动永久剔除失效航线。\n\n" +
-                            "• 免责声明：本应用为个人行程规划工具，与浙江长龙航空有限公司无任何官方关联；最终可兑资格、航班时刻与剩余座位数请以长龙航空官方 App 及微信小程序为准。",
-                        style = LoongType.subhead.copy(lineHeight = 24.sp),
+                        text = "接口协议参考 eureka-wu/clairline（MIT），视觉交互致敬 zzNaLogiczz/chher-public。",
+                        style = LoongType.footnote,
                         color = p.textSecondary
                     )
                 }
             }
         }
+    }
+}
+
+@Composable
+private fun AboutInfoBlock(title: String, content: String) {
+    val p = LocalLoongPalette.current
+    Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+        Text(
+            text = title,
+            style = LoongType.footnoteStrong,
+            color = p.textPrimary
+        )
+        Text(
+            text = content,
+            style = LoongType.subhead,
+            color = p.textSecondary
+        )
     }
 }
 

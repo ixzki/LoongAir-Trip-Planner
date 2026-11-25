@@ -391,12 +391,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (st.route == null) return
         _routeDetailState.update { it.copy(selectedDate = dateStr) }
         val rawStatus = st.calendarByDate[dateStr]
-        val isGlobalBlocked = dateStr in st.globalUnavailableDates
-        val status = if (isGlobalBlocked && rawStatus != 1 && rawStatus != 0) -2 else rawStatus
-        val cutoffLimit = ChinaClock.today().plusDays(3).toString()
-        val isCutoffClosed = dateStr < cutoffLimit && status != 1 && status != 0
+        val parsedDate = runCatching { LocalDate.parse(dateStr) }.getOrNull()
+        val status = parsedDate?.let {
+            RoundTripMatcher.normalizeCalendarStatus(
+                rawStatus = rawStatus,
+                date = it,
+                today = ChinaClock.today(),
+                globalUnavailableDates = st.globalUnavailableDates
+            )
+        } ?: rawStatus
         val hasCached = !st.seatsByDate[dateStr].isNullOrEmpty()
-        if (autoQuerySeats && (status == -2 || status == -4 || isCutoffClosed)) {
+        if (autoQuerySeats && (status == -2 || status == -3 || status == -4)) {
             return
         }
         if (autoQuerySeats && sessionState.value.isLoggedIn && !hasCached) {

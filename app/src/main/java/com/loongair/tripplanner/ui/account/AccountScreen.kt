@@ -225,8 +225,6 @@ fun AccountScreen(viewModel: MainViewModel) {
                     onSelectTheme = { viewModel.setThemeStyle(it.key) },
                     onResetTemplates = { viewModel.resetDefaultTemplates() },
                     onClearCache = { viewModel.clearLocalCaches() },
-                    onOpenDiagnostic = { showDiagnosticDialog = true },
-                    onOpenManual = { showManualDialog = true },
                     onOpenAbout = { subPage = ProfileSubPage.ABOUT },
                     onLogout = {
                         viewModel.logout()
