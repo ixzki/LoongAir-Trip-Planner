@@ -83,6 +83,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var batchJob: Job? = null
     private var officialSyncJob: Job? = null
     private var calibrateJob: Job? = null
+    private var searchJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -554,7 +555,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun runSearch() {
-        viewModelScope.launch {
+        searchJob?.cancel()
+        searchJob = viewModelScope.launch {
             val st = _searchState.value
             _searchState.update { it.copy(isLoading = true) }
             val results = repo.searchRoundTrips(
@@ -595,8 +597,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun resetDefaultTemplates() {
         viewModelScope.launch {
-            RoundTripMatcher.defaultTemplates().forEach { repo.saveTemplate(it) }
-            showMessage("已补充默认往返模板")
+            repo.restoreDefaultTemplates()
+            showMessage("已恢复默认往返模板（已自动去重）")
         }
     }
 
@@ -735,14 +737,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     outDateStr = plan.outboundDate,
                     retDateStr = plan.returnDate
                 )
-                val matchedOut = outSeats.firstOrNull {
-                    it.flightNo == plan.outboundFlightNo || it.depTime == plan.outboundDepTime
-                }
-                val matchedRet = retSeats.firstOrNull {
-                    it.flightNo == plan.returnFlightNo || it.depTime == plan.returnDepTime
-                }
-                val outLeft = matchedOut?.secCardLeft ?: outSeats.sumOf { it.secCardLeft }
-                val retLeft = matchedRet?.secCardLeft ?: retSeats.sumOf { it.secCardLeft }
+                val matchedOutLeft = RoundTripMatcher.matchPlannedFlightSecLeft(
+                    seats = outSeats,
+                    targetFlightNo = plan.outboundFlightNo,
+                    targetDepTime = plan.outboundDepTime
+                )
+                val matchedRetLeft = RoundTripMatcher.matchPlannedFlightSecLeft(
+                    seats = retSeats,
+                    targetFlightNo = plan.returnFlightNo,
+                    targetDepTime = plan.returnDepTime
+                )
+                val outLeft = matchedOutLeft ?: 0
+                val retLeft = matchedRetLeft ?: 0
 
                 repo.updatePlan(
                     plan.copy(
@@ -751,7 +757,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         lastVerifiedAt = System.currentTimeMillis()
                     )
                 )
-                showMessage("最新余票：去程 ${plan.outboundFlightNo} 余 $outLeft 张，返程 ${plan.returnFlightNo} 余 $retLeft 张")
+                val outDesc = if (matchedOutLeft != null) "去程 ${plan.outboundFlightNo} 余 $outLeft 张" else "去程 ${plan.outboundFlightNo} 当日未查到该班次"
+                val retDesc = if (matchedRetLeft != null) "返程 ${plan.returnFlightNo} 余 $retLeft 张" else "返程 ${plan.returnFlightNo} 当日未查到该班次"
+                showMessage("最新余票：$outDesc，$retDesc")
+            } catch (c: CancellationException) {
+                throw c
             } catch (e: Exception) {
                 showMessage("复查余票失败：${e.message}")
             } finally {
@@ -885,8 +895,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun selectActiveCard(grantTid: String, cardName: String) {
-        repo.authPrefs.selectActiveCard(grantTid, cardName)
-        showMessage("已切换当前畅飞卡：$cardName ($grantTid)")
+        val cleanTid = grantTid.trim()
+        val prevTid = sessionState.value.secCardGrantTid.trim()
+        repo.authPrefs.selectActiveCard(cleanTid, cardName)
+        if (prevTid.isNotBlank() && prevTid != cleanTid) {
+            cancelAllBackgroundJobs()
+            viewModelScope.launch {
+                repo.clearCardSpecificCaches()
+                reloadAllCityAndRouteData(initialLoad = true)
+                showMessage("已切换畅飞卡：$cardName，旧卡航线与日历缓存已清理，请同步新卡适用航线")
+            }
+        } else {
+            showMessage("当前畅飞卡：$cardName ($cleanTid)")
+        }
     }
 
     fun updateScgTidManually(newTid: String) {
@@ -895,8 +916,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showMessage("授权 ID 不能为空")
             return
         }
+        val prevTid = sessionState.value.secCardGrantTid.trim()
         repo.authPrefs.selectActiveCard(clean, sessionState.value.cardName)
-        showMessage("已更新畅飞卡授权 ID：$clean")
+        if (prevTid.isNotBlank() && prevTid != clean) {
+            cancelAllBackgroundJobs()
+            viewModelScope.launch {
+                repo.clearCardSpecificCaches()
+                reloadAllCityAndRouteData(initialLoad = true)
+                showMessage("已更新畅飞卡授权 ID 并清理旧卡缓存，请重新同步适用航线")
+            }
+        } else {
+            showMessage("已确认畅飞卡授权 ID：$clean")
+        }
     }
 
     /**
@@ -1094,6 +1125,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         stopBatchCalendarVerify()
         calibrateJob?.cancel()
         calibrateJob = null
+        searchJob?.cancel()
+        searchJob = null
     }
 
     fun logout() {

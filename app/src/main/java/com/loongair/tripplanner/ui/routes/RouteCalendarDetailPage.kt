@@ -385,30 +385,9 @@ private fun SelectedDateSeatsCard(
             }
 
             seats.isNotEmpty() -> {
-                // 同一航班多舱位聚合展示，并按解码后航班号去重防止历史混淆行重复叠加
-                val grouped = remember(seats) {
-                    seats.groupBy { s ->
-                        val clean = LoongAirApi.decodeFlightNo(s.flightNo)
-                            ?: s.flightNo.takeUnless { it.contains("&") }
-                            ?: s.flightNo
-                        "$clean|${s.depTime}"
-                    }.values.map { list ->
-                        val cleanRows = list.filterNot { it.flightNo.contains("&") }.ifEmpty { list }
-                        val byCabin = cleanRows.groupBy { it.cabinCode.ifBlank { "M" } }
-                            .values.map { group -> group.maxBy { it.queriedAt } }
-                        val head = byCabin.first()
-                        val secTotal = byCabin.sumOf { it.secCardLeft }
-                        val normalMax = byCabin.maxOf { it.normalLeft }
-                        val minPrice = byCabin.map { it.redeemPrice }.filter { it > 0 }.minOrNull() ?: 0.0
-                        Triple(head, secTotal to normalMax, minPrice)
-                    }.sortedBy { it.first.depTime }
-                }
+                val grouped = remember(seats) { RoundTripMatcher.aggregateFlightSnapshots(seats) }
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
-                    grouped.forEach { (head, counts, minPrice) ->
-                        val (secLeft, normalLeft) = counts
-                        val cleanNo = LoongAirApi.decodeFlightNo(head.flightNo)
-                            ?: head.flightNo.takeUnless { it.contains("&") }
-                            ?: "GJ班次"
+                    grouped.forEach { item ->
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -424,32 +403,32 @@ private fun SelectedDateSeatsCard(
                                     horizontalArrangement = Arrangement.spacedBy(7.dp)
                                 ) {
                                     Text(
-                                        "${head.depTime} → ${head.arrTime}",
+                                        "${item.depTime} → ${item.arrTime}",
                                         style = LoongType.tabularTitle.copy(fontSize = 15.sp),
                                         color = p.textPrimary
                                     )
                                     Text(
-                                        cleanNo,
+                                        item.cleanFlightNo.ifBlank { "GJ班次" },
                                         style = LoongType.footnoteStrong.copy(fontFeatureSettings = "tnum"),
                                         color = p.primary
                                     )
                                 }
-                                val priceText = if (minPrice > 0) " · 现金参考 ¥${minPrice.toInt()}" else ""
+                                val priceText = if (item.minRedeemPrice > 0) " · 现金参考 ¥${item.minRedeemPrice.toInt()}" else ""
                                 Text(
-                                    "${head.stopover} · ${head.aircraft.ifBlank { "A320" }}$priceText",
+                                    "${item.stopover} · ${item.aircraft.ifBlank { "A320" }}$priceText",
                                     style = LoongType.caption.copy(fontWeight = FontWeight.Normal, fontFeatureSettings = "tnum"),
                                     color = p.textTertiary
                                 )
                             }
                             Column(horizontalAlignment = Alignment.End, verticalArrangement = Arrangement.spacedBy(2.dp)) {
                                 TonePillBadge(
-                                    text = if (secLeft > 0) "畅飞余 ${secLeft}张" else "畅飞无票",
-                                    backgroundColor = if (secLeft > 0) p.successBg else p.dangerBg,
-                                    contentColor = if (secLeft > 0) p.success else p.danger,
+                                    text = if (item.secCardLeft > 0) "畅飞余 ${item.secCardLeft}张" else "畅飞无票",
+                                    backgroundColor = if (item.secCardLeft > 0) p.successBg else p.dangerBg,
+                                    contentColor = if (item.secCardLeft > 0) p.success else p.danger,
                                     cornerRadius = 8.dp
                                 )
                                 Text(
-                                    "普通余 $normalLeft",
+                                    "普通余 ${item.normalLeft}",
                                     style = LoongType.caption.copy(
                                         fontSize = 11.sp,
                                         fontWeight = FontWeight.Normal,
@@ -535,16 +514,7 @@ private fun MonthAvailabilityCard(
                             val status = calendarByDate[dateStr]
                             val cachedSeats = seatsByDate[dateStr]
                             val liveSum = cachedSeats?.let { list ->
-                                list.groupBy { s ->
-                                    val clean = LoongAirApi.decodeFlightNo(s.flightNo)
-                                        ?: s.flightNo.takeUnless { it.contains("&") }
-                                        ?: s.flightNo
-                                    "$clean|${s.depTime}"
-                                }.values.sumOf { flightRows ->
-                                    val cleanRows = flightRows.filterNot { it.flightNo.contains("&") }.ifEmpty { flightRows }
-                                    cleanRows.groupBy { it.cabinCode.ifBlank { "M" } }
-                                        .values.sumOf { g -> g.maxBy { it.queriedAt }.secCardLeft }
-                                }
+                                RoundTripMatcher.aggregateFlightSnapshots(list).sumOf { it.secCardLeft }
                             }
                             val isSel = selectedDate == dateStr
 

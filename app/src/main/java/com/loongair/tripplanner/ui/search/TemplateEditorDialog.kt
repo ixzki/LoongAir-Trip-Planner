@@ -98,7 +98,7 @@ fun TemplateEditorDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = p.cardBg,
         title = {
             Row(
                 modifier = Modifier.fillMaxWidth(),
@@ -335,7 +335,7 @@ fun TemplateManagerDialog(
     val p = LocalLoongPalette.current
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = p.cardBg,
         title = {
             Row(
                 modifier = Modifier.fillMaxWidth(),

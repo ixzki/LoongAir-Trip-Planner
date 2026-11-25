@@ -1,6 +1,7 @@
 package com.loongair.tripplanner.data.repository
 
 import android.content.Context
+import androidx.room.withTransaction
 import com.loongair.tripplanner.data.local.AppDatabase
 import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.local.CalendarCacheEntity
@@ -140,8 +141,10 @@ class FlightRepository(
             s.copy(flightNo = decoded)
         }
         if (snapsToFix.isNotEmpty()) {
-            db.seatSnapshotDao().upsertAll(snapsToFix)
-            db.seatSnapshotDao().deleteObfuscated()
+            db.withTransaction {
+                db.seatSnapshotDao().upsertAll(snapsToFix)
+                db.seatSnapshotDao().deleteObfuscated()
+            }
         }
 
         val plansToFix = db.tripPlanDao().getAll().mapNotNull { p ->
@@ -313,12 +316,14 @@ class FlightRepository(
                 )
             }
 
-            if (airportEntities.isNotEmpty()) {
-                db.officialAirportDao().upsertAll(airportEntities)
-            }
-            db.officialRouteDao().deleteForOrigin(fromCity)
-            if (routeEntities.isNotEmpty()) {
-                db.officialRouteDao().upsertAll(routeEntities)
+            db.withTransaction {
+                if (airportEntities.isNotEmpty()) {
+                    db.officialAirportDao().upsertAll(airportEntities)
+                }
+                db.officialRouteDao().deleteForOrigin(fromCity)
+                if (routeEntities.isNotEmpty()) {
+                    db.officialRouteDao().upsertAll(routeEntities)
+                }
             }
             routeEntities
         }
@@ -497,8 +502,10 @@ class FlightRepository(
         }.sortedBy { it.depTime }
 
         if (entities.isNotEmpty()) {
-            db.flightRouteDao().deleteForRoute(fromCity, toCity)
-            db.flightRouteDao().insertAll(entities)
+            db.withTransaction {
+                db.flightRouteDao().deleteForRoute(fromCity, toCity)
+                db.flightRouteDao().insertAll(entities)
+            }
         }
         return allOk
     }
@@ -550,8 +557,10 @@ class FlightRepository(
                 season = "official"
             )
         }
-        db.flightRouteDao().deleteForRoute(fromCity, toCity)
-        db.flightRouteDao().insertAll(entities)
+        db.withTransaction {
+            db.flightRouteDao().deleteForRoute(fromCity, toCity)
+            db.flightRouteDao().insertAll(entities)
+        }
         entities
     }
 
@@ -581,8 +590,10 @@ class FlightRepository(
                 season = "official"
             )
         }
-        db.flightRouteDao().deleteForRoute(fromCity, toCity)
-        db.flightRouteDao().insertAll(entities)
+        db.withTransaction {
+            db.flightRouteDao().deleteForRoute(fromCity, toCity)
+            db.flightRouteDao().insertAll(entities)
+        }
     }
 
     /**
@@ -806,7 +817,6 @@ class FlightRepository(
         val knownRoutes = db.flightRouteDao().getRoutes(fromCity, toCity)
         val liveList = api.searchFlights(fromCity, toCity, dateStr, knownRoutes)
         val now = System.currentTimeMillis()
-        db.seatSnapshotDao().deleteForRouteDate(fromCity, toCity, dateStr)
         val entities = liveList.map { s ->
             SeatSnapshotEntity(
                 fromCity = fromCity,
@@ -820,15 +830,12 @@ class FlightRepository(
                 secCardLeft = s.secCardLeft,
                 normalLeft = s.normalLeft,
                 redeemPrice = s.redeemPrice,
-                cabinCode = s.cabinCode,
+                cabinCode = s.cabinCode.ifBlank { "M" },
                 queriedAt = now
             )
         }
-        if (entities.isNotEmpty()) {
-            db.seatSnapshotDao().upsertAll(entities)
-        }
         // 被动自学习：每次单日查票时自动补充未收录航班，并修正该星期未执飞的旧班期
-        if (updateFlightRoutes && liveList.isNotEmpty()) {
+        val mergedRoutes = if (updateFlightRoutes && liveList.isNotEmpty()) {
             val dowChar = runCatching { LocalDate.parse(dateStr).dayOfWeek.value.toString() }.getOrNull()
             val observedNos = liveList.map { it.flightNo }.toSet()
             val merged = mutableListOf<FlightRouteEntity>()
@@ -840,7 +847,6 @@ class FlightRepository(
                     if (r.flightNo in observedNos) {
                         digits.add(dowChar[0])
                     } else if (digits.size > 1) {
-                        // 该日期确有实时航班但此班次未出现，从执飞星期中剔除该天
                         digits.remove(dowChar[0])
                     }
                     val nextFreq = digits.sorted().joinToString("")
@@ -872,9 +878,17 @@ class FlightRepository(
                     )
                 }
             }
-            if (merged.isNotEmpty()) {
+            merged.sortedBy { it.depTime }.takeIf { it.isNotEmpty() }
+        } else null
+
+        db.withTransaction {
+            db.seatSnapshotDao().deleteForRouteDate(fromCity, toCity, dateStr)
+            if (entities.isNotEmpty()) {
+                db.seatSnapshotDao().upsertAll(entities)
+            }
+            if (mergedRoutes != null) {
                 db.flightRouteDao().deleteForRoute(fromCity, toCity)
-                db.flightRouteDao().insertAll(merged.sortedBy { it.depTime })
+                db.flightRouteDao().insertAll(mergedRoutes)
             }
         }
         liveList
@@ -906,6 +920,26 @@ class FlightRepository(
         db.tripTemplateDao().delete(template)
     }
 
+    /**
+     * 幂等恢复默认往返模板：按名称合并更新已有同名模板并清理多余重复项，多次点击绝不产生重复行。
+     */
+    suspend fun restoreDefaultTemplates() = withContext(Dispatchers.IO) {
+        val defaults = RoundTripMatcher.defaultTemplates()
+        db.withTransaction {
+            val existingByName = db.tripTemplateDao().getAll().groupBy { it.name.trim() }
+            for (def in defaults) {
+                val matches = existingByName[def.name.trim()].orEmpty()
+                if (matches.isEmpty()) {
+                    db.tripTemplateDao().insert(def)
+                } else {
+                    val primary = matches.first()
+                    db.tripTemplateDao().update(def.copy(id = primary.id))
+                    matches.drop(1).forEach { dup -> db.tripTemplateDao().delete(dup) }
+                }
+            }
+        }
+    }
+
     fun observePlans(): Flow<List<TripPlanEntity>> = db.tripPlanDao().observeAll()
 
     suspend fun getPlanById(id: Long): TripPlanEntity? = withContext(Dispatchers.IO) {
@@ -921,8 +955,10 @@ class FlightRepository(
     }
 
     suspend fun deletePlan(plan: TripPlanEntity) = withContext(Dispatchers.IO) {
-        db.reminderDao().deleteForPlan(plan.id)
-        db.tripPlanDao().delete(plan)
+        db.withTransaction {
+            db.reminderDao().deleteForPlan(plan.id)
+            db.tripPlanDao().delete(plan)
+        }
     }
 
     fun observeReminders(): Flow<List<ReminderEntity>> = db.reminderDao().observeAll()
@@ -943,12 +979,26 @@ class FlightRepository(
         db.reminderDao().deleteById(reminderId)
     }
 
+    /**
+     * 切换名下不同畅飞卡 (scgTid) 时清理与具体卡片绑定的航线、日历和余票缓存（保留官方城市机场目录）。
+     */
+    suspend fun clearCardSpecificCaches() = withContext(Dispatchers.IO) {
+        db.withTransaction {
+            db.calendarCacheDao().clearAll()
+            db.seatSnapshotDao().clearAll()
+            db.officialRouteDao().clearAll()
+            db.flightRouteDao().clearAll()
+        }
+    }
+
     suspend fun clearAllCaches() = withContext(Dispatchers.IO) {
-        db.calendarCacheDao().clearAll()
-        db.seatSnapshotDao().clearAll()
-        db.officialRouteDao().clearAll()
-        db.flightRouteDao().clearAll()
-        db.officialAirportDao().clearAll()
+        db.withTransaction {
+            db.calendarCacheDao().clearAll()
+            db.seatSnapshotDao().clearAll()
+            db.officialRouteDao().clearAll()
+            db.flightRouteDao().clearAll()
+            db.officialAirportDao().clearAll()
+        }
         authPrefs.setHomeCity("")
     }
 }

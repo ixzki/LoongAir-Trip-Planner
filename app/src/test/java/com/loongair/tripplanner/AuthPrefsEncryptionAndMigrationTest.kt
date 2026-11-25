@@ -98,6 +98,7 @@ class AuthPrefsEncryptionAndMigrationTest {
                 "mobile" to "13800138000",
                 "cert_number" to "330106199001011234",
                 "sec_card_grant_tid" to "SCG_88888",
+                "card_diagnostic" to "[diag] legacy text",
                 "home_city" to "杭州",
                 "theme_style" to "crimson"
             )
@@ -111,12 +112,17 @@ class AuthPrefsEncryptionAndMigrationTest {
         assertEquals("PLAIN_SESSION_TOKEN_12345", migratedState.sessionToken)
         assertEquals("138****8000", migratedState.maskedMobile)
         assertEquals("330106199001011234", migratedState.certNumber)
+        assertEquals("[diag] legacy text", migratedState.cardDiagnostic)
+        assertEquals("98****10", com.loongair.tripplanner.data.local.UserSessionState.maskGrantId("9876543210"))
+        assertEquals("(空)", com.loongair.tripplanner.data.local.UserSessionState.maskGrantId(""))
 
         // 底层存储已被自动重加密为 enc:v1: 密文，不再包含明文敏感串
         val storedToken = rawPrefs.getString("session_token", "")!!
         val storedCert = rawPrefs.getString("cert_number", "")!!
+        val storedDiag = rawPrefs.getString("card_diagnostic", "")!!
         assertTrue(storedToken.startsWith("enc:v1:"))
         assertTrue(storedCert.startsWith("enc:v1:"))
+        assertTrue(storedDiag.startsWith("enc:v1:"))
         assertNotEquals("PLAIN_SESSION_TOKEN_12345", storedToken)
         assertFalse(storedCert.contains("330106"))
 

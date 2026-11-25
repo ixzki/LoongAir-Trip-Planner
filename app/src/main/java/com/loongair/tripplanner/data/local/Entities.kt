@@ -30,7 +30,11 @@ data class FlightRouteEntity(
 
 @Entity(
     tableName = "route_calendar",
-    primaryKeys = ["fromCity", "toCity", "flightDate"]
+    primaryKeys = ["fromCity", "toCity", "flightDate"],
+    indices = [
+        Index(value = ["toCity", "flightDate"]),
+        Index(value = ["flightDate"])
+    ]
 )
 data class CalendarCacheEntity(
     val fromCity: String,
@@ -42,7 +46,10 @@ data class CalendarCacheEntity(
 
 @Entity(
     tableName = "seat_snapshots",
-    primaryKeys = ["fromCity", "toCity", "flightDate", "flightNo", "depTime"]
+    primaryKeys = ["fromCity", "toCity", "flightDate", "flightNo", "depTime", "cabinCode"],
+    indices = [
+        Index(value = ["flightDate"])
+    ]
 )
 data class SeatSnapshotEntity(
     val fromCity: String,
@@ -107,7 +114,10 @@ data class TripPlanEntity(
 
 @Entity(
     tableName = "reminders",
-    indices = [Index(value = ["planId"])]
+    indices = [
+        Index(value = ["planId"]),
+        Index(value = ["enabled", "fired", "triggerAtMillis"])
+    ]
 )
 data class ReminderEntity(
     @PrimaryKey(autoGenerate = true) val id: Long = 0,

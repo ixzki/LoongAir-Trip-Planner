@@ -1,0 +1,700 @@
+{
+  "formatVersion": 1,
+  "database": {
+    "version": 5,
+    "identityHash": "6020e85b18c13999bf326ba78855a753",
+    "entities": [
+      {
+        "tableName": "flight_routes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `fromCity` TEXT NOT NULL, `toCity` TEXT NOT NULL, `fromIata` TEXT NOT NULL, `toIata` TEXT NOT NULL, `flightNo` TEXT NOT NULL, `depTime` TEXT NOT NULL, `arrTime` TEXT NOT NULL, `duration` TEXT NOT NULL, `aircraft` TEXT NOT NULL, `frequency` TEXT NOT NULL, `stopover` TEXT NOT NULL, `season` TEXT NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromCity",
+            "columnName": "fromCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toCity",
+            "columnName": "toCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromIata",
+            "columnName": "fromIata",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toIata",
+            "columnName": "toIata",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flightNo",
+            "columnName": "flightNo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "depTime",
+            "columnName": "depTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "arrTime",
+            "columnName": "arrTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "duration",
+            "columnName": "duration",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aircraft",
+            "columnName": "aircraft",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "frequency",
+            "columnName": "frequency",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stopover",
+            "columnName": "stopover",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "season",
+            "columnName": "season",
+            "affinity": "TEXT",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_flight_routes_fromCity_toCity",
+            "unique": false,
+            "columnNames": [
+              "fromCity",
+              "toCity"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flight_routes_fromCity_toCity` ON `${TABLE_NAME}` (`fromCity`, `toCity`)"
+          },
+          {
+            "name": "index_flight_routes_fromCity",
+            "unique": false,
+            "columnNames": [
+              "fromCity"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flight_routes_fromCity` ON `${TABLE_NAME}` (`fromCity`)"
+          },
+          {
+            "name": "index_flight_routes_toCity",
+            "unique": false,
+            "columnNames": [
+              "toCity"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_flight_routes_toCity` ON `${TABLE_NAME}` (`toCity`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "route_calendar",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`fromCity` TEXT NOT NULL, `toCity` TEXT NOT NULL, `flightDate` TEXT NOT NULL, `status` INTEGER NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`fromCity`, `toCity`, `flightDate`))",
+        "fields": [
+          {
+            "fieldPath": "fromCity",
+            "columnName": "fromCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toCity",
+            "columnName": "toCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flightDate",
+            "columnName": "flightDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "status",
+            "columnName": "status",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "fromCity",
+            "toCity",
+            "flightDate"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_route_calendar_toCity_flightDate",
+            "unique": false,
+            "columnNames": [
+              "toCity",
+              "flightDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_route_calendar_toCity_flightDate` ON `${TABLE_NAME}` (`toCity`, `flightDate`)"
+          },
+          {
+            "name": "index_route_calendar_flightDate",
+            "unique": false,
+            "columnNames": [
+              "flightDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_route_calendar_flightDate` ON `${TABLE_NAME}` (`flightDate`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "seat_snapshots",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`fromCity` TEXT NOT NULL, `toCity` TEXT NOT NULL, `flightDate` TEXT NOT NULL, `flightNo` TEXT NOT NULL, `depTime` TEXT NOT NULL, `arrTime` TEXT NOT NULL, `aircraft` TEXT NOT NULL, `stopover` TEXT NOT NULL, `secCardLeft` INTEGER NOT NULL, `normalLeft` INTEGER NOT NULL, `redeemPrice` REAL NOT NULL, `cabinCode` TEXT NOT NULL, `queriedAt` INTEGER NOT NULL, PRIMARY KEY(`fromCity`, `toCity`, `flightDate`, `flightNo`, `depTime`, `cabinCode`))",
+        "fields": [
+          {
+            "fieldPath": "fromCity",
+            "columnName": "fromCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toCity",
+            "columnName": "toCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flightDate",
+            "columnName": "flightDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "flightNo",
+            "columnName": "flightNo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "depTime",
+            "columnName": "depTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "arrTime",
+            "columnName": "arrTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "aircraft",
+            "columnName": "aircraft",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "stopover",
+            "columnName": "stopover",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "secCardLeft",
+            "columnName": "secCardLeft",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "normalLeft",
+            "columnName": "normalLeft",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "redeemPrice",
+            "columnName": "redeemPrice",
+            "affinity": "REAL",
+            "notNull": true
+          },
+          {
+            "fieldPath": "cabinCode",
+            "columnName": "cabinCode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "queriedAt",
+            "columnName": "queriedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "fromCity",
+            "toCity",
+            "flightDate",
+            "flightNo",
+            "depTime",
+            "cabinCode"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_seat_snapshots_flightDate",
+            "unique": false,
+            "columnNames": [
+              "flightDate"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_seat_snapshots_flightDate` ON `${TABLE_NAME}` (`flightDate`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "trip_templates",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `name` TEXT NOT NULL, `outDayOfWeek` INTEGER NOT NULL, `outDaysOfWeek` TEXT NOT NULL, `outStartMinute` INTEGER NOT NULL, `outEndMinute` INTEGER NOT NULL, `retOffsetDays` INTEGER NOT NULL, `retStartMinute` INTEGER NOT NULL, `retEndMinute` INTEGER NOT NULL, `weekOffset` INTEGER NOT NULL, `directOnly` INTEGER NOT NULL, `sortOrder` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "name",
+            "columnName": "name",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outDayOfWeek",
+            "columnName": "outDayOfWeek",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outDaysOfWeek",
+            "columnName": "outDaysOfWeek",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outStartMinute",
+            "columnName": "outStartMinute",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outEndMinute",
+            "columnName": "outEndMinute",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retOffsetDays",
+            "columnName": "retOffsetDays",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retStartMinute",
+            "columnName": "retStartMinute",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "retEndMinute",
+            "columnName": "retEndMinute",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "weekOffset",
+            "columnName": "weekOffset",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "directOnly",
+            "columnName": "directOnly",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "sortOrder",
+            "columnName": "sortOrder",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "trip_plans",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `fromCity` TEXT NOT NULL, `toCity` TEXT NOT NULL, `outboundDate` TEXT NOT NULL, `outboundFlightNo` TEXT NOT NULL, `outboundDepTime` TEXT NOT NULL, `outboundArrTime` TEXT NOT NULL, `outboundStopover` TEXT NOT NULL, `outboundLeftCount` INTEGER, `returnDate` TEXT NOT NULL, `returnFlightNo` TEXT NOT NULL, `returnDepTime` TEXT NOT NULL, `returnArrTime` TEXT NOT NULL, `returnStopover` TEXT NOT NULL, `returnLeftCount` INTEGER, `note` TEXT NOT NULL, `lastVerifiedAt` INTEGER, `createdAt` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromCity",
+            "columnName": "fromCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toCity",
+            "columnName": "toCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundDate",
+            "columnName": "outboundDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundFlightNo",
+            "columnName": "outboundFlightNo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundDepTime",
+            "columnName": "outboundDepTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundArrTime",
+            "columnName": "outboundArrTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundStopover",
+            "columnName": "outboundStopover",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "outboundLeftCount",
+            "columnName": "outboundLeftCount",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "returnDate",
+            "columnName": "returnDate",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "returnFlightNo",
+            "columnName": "returnFlightNo",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "returnDepTime",
+            "columnName": "returnDepTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "returnArrTime",
+            "columnName": "returnArrTime",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "returnStopover",
+            "columnName": "returnStopover",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "returnLeftCount",
+            "columnName": "returnLeftCount",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "note",
+            "columnName": "note",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "lastVerifiedAt",
+            "columnName": "lastVerifiedAt",
+            "affinity": "INTEGER",
+            "notNull": false
+          },
+          {
+            "fieldPath": "createdAt",
+            "columnName": "createdAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "reminders",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`id` INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL, `planId` INTEGER NOT NULL, `triggerAtMillis` INTEGER NOT NULL, `title` TEXT NOT NULL, `message` TEXT NOT NULL, `label` TEXT NOT NULL, `enabled` INTEGER NOT NULL, `fired` INTEGER NOT NULL)",
+        "fields": [
+          {
+            "fieldPath": "id",
+            "columnName": "id",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "planId",
+            "columnName": "planId",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "triggerAtMillis",
+            "columnName": "triggerAtMillis",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "title",
+            "columnName": "title",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "message",
+            "columnName": "message",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "label",
+            "columnName": "label",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "enabled",
+            "columnName": "enabled",
+            "affinity": "INTEGER",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fired",
+            "columnName": "fired",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": true,
+          "columnNames": [
+            "id"
+          ]
+        },
+        "indices": [
+          {
+            "name": "index_reminders_planId",
+            "unique": false,
+            "columnNames": [
+              "planId"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reminders_planId` ON `${TABLE_NAME}` (`planId`)"
+          },
+          {
+            "name": "index_reminders_enabled_fired_triggerAtMillis",
+            "unique": false,
+            "columnNames": [
+              "enabled",
+              "fired",
+              "triggerAtMillis"
+            ],
+            "orders": [],
+            "createSql": "CREATE INDEX IF NOT EXISTS `index_reminders_enabled_fired_triggerAtMillis` ON `${TABLE_NAME}` (`enabled`, `fired`, `triggerAtMillis`)"
+          }
+        ],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "official_routes",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`fromCity` TEXT NOT NULL, `fromAirport` TEXT NOT NULL, `fromIata` TEXT NOT NULL, `toCity` TEXT NOT NULL, `toAirport` TEXT NOT NULL, `toIata` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`fromCity`, `toCity`))",
+        "fields": [
+          {
+            "fieldPath": "fromCity",
+            "columnName": "fromCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromAirport",
+            "columnName": "fromAirport",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "fromIata",
+            "columnName": "fromIata",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toCity",
+            "columnName": "toCity",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toAirport",
+            "columnName": "toAirport",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "toIata",
+            "columnName": "toIata",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "fromCity",
+            "toCity"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      },
+      {
+        "tableName": "official_airports",
+        "createSql": "CREATE TABLE IF NOT EXISTS `${TABLE_NAME}` (`cityName` TEXT NOT NULL, `airportName` TEXT NOT NULL, `airportCode` TEXT NOT NULL, `pinyin` TEXT NOT NULL, `updatedAt` INTEGER NOT NULL, PRIMARY KEY(`cityName`))",
+        "fields": [
+          {
+            "fieldPath": "cityName",
+            "columnName": "cityName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "airportName",
+            "columnName": "airportName",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "airportCode",
+            "columnName": "airportCode",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "pinyin",
+            "columnName": "pinyin",
+            "affinity": "TEXT",
+            "notNull": true
+          },
+          {
+            "fieldPath": "updatedAt",
+            "columnName": "updatedAt",
+            "affinity": "INTEGER",
+            "notNull": true
+          }
+        ],
+        "primaryKey": {
+          "autoGenerate": false,
+          "columnNames": [
+            "cityName"
+          ]
+        },
+        "indices": [],
+        "foreignKeys": []
+      }
+    ],
+    "views": [],
+    "setupQueries": [
+      "CREATE TABLE IF NOT EXISTS room_master_table (id INTEGER PRIMARY KEY,identity_hash TEXT)",
+      "INSERT OR REPLACE INTO room_master_table (id,identity_hash) VALUES(42, '6020e85b18c13999bf326ba78855a753')"
+    ]
+  }
+}

@@ -6,6 +6,7 @@ import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.local.TripTemplateEntity
 import com.loongair.tripplanner.data.remote.CityMeta
+import com.loongair.tripplanner.data.remote.FlightNoDecoder
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.util.ChinaClock
 import java.time.DayOfWeek
@@ -398,16 +399,89 @@ object RoundTripMatcher {
         )
     }
 
-    private fun mergeWithLiveSeats(
+    data class AggregatedFlightSnapshot(
+        val cleanFlightNo: String,
+        val depTime: String,
+        val arrTime: String,
+        val aircraft: String,
+        val stopover: String,
+        val secCardLeft: Int,
+        val normalLeft: Int,
+        val minRedeemPrice: Double,
+        val queriedAt: Long
+    )
+
+    /**
+     * 将同一航班多个舱位的余票快照聚合为单条航班级余票：
+     * - 按解码后的航班号 + 起飞时间分组；
+     * - 同一舱位若有历史重复行取最新 queriedAt；
+     * - 跨舱位对 secCardLeft 求和、normalLeft 取最大、正数价格取最低。
+     */
+    fun aggregateFlightSnapshots(snapshots: List<SeatSnapshotEntity>): List<AggregatedFlightSnapshot> {
+        if (snapshots.isEmpty()) return emptyList()
+        return snapshots.groupBy { s ->
+            val clean = FlightNoDecoder.decode(s.flightNo)
+                ?: s.flightNo.takeUnless { it.contains("&") }
+                ?: s.flightNo
+            "$clean|${s.depTime}"
+        }.values.map { list ->
+            val cleanRows = list.filterNot { it.flightNo.contains("&") }.ifEmpty { list }
+            val byCabin = cleanRows.groupBy { it.cabinCode.ifBlank { "M" } }
+                .values.map { g -> g.maxBy { it.queriedAt } }
+            val head = byCabin.first()
+            val cleanNo = FlightNoDecoder.decode(head.flightNo)
+                ?: head.flightNo.takeUnless { it.contains("&") }
+                ?: head.flightNo
+            AggregatedFlightSnapshot(
+                cleanFlightNo = cleanNo,
+                depTime = head.depTime,
+                arrTime = head.arrTime,
+                aircraft = head.aircraft,
+                stopover = head.stopover,
+                secCardLeft = byCabin.sumOf { it.secCardLeft },
+                normalLeft = byCabin.maxOf { it.normalLeft },
+                minRedeemPrice = byCabin.map { it.redeemPrice }.filter { it > 0 }.minOrNull() ?: 0.0,
+                queriedAt = byCabin.maxOf { it.queriedAt }
+            )
+        }.sortedBy { it.depTime }
+    }
+
+    /**
+     * 针对已保存行程计划中的目标航班，汇总其实时多舱位畅飞卡余票；
+     * 若当日未查到该航班（如停飞或调时），返回 null 而非误取其他航班余票。
+     */
+    fun matchPlannedFlightSecLeft(
+        seats: List<LiveFlightSeat>,
+        targetFlightNo: String,
+        targetDepTime: String
+    ): Int? {
+        if (seats.isEmpty()) return null
+        val normTargetNo = FlightNoDecoder.decode(targetFlightNo) ?: targetFlightNo.trim().uppercase()
+        val byNo = seats.filter {
+            val normSeatNo = FlightNoDecoder.decode(it.flightNo) ?: it.flightNo.trim().uppercase()
+            normSeatNo.isNotBlank() && normSeatNo == normTargetNo
+        }
+        val matched = byNo.ifEmpty {
+            seats.filter { it.depTime == targetDepTime }
+        }
+        if (matched.isEmpty()) return null
+        return matched.groupBy { it.cabinCode.ifBlank { "M" } }
+            .values
+            .sumOf { group -> group.maxOf { it.secCardLeft } }
+    }
+
+    internal fun mergeWithLiveSeats(
         routes: List<FlightRouteEntity>,
         snapshots: List<SeatSnapshotEntity>
     ): List<FlightCandidate> {
-        val snapByNo = snapshots.associateBy { it.flightNo }
-        val snapByDep = snapshots.associateBy { it.depTime }
+        val aggregated = aggregateFlightSnapshots(snapshots)
+        val snapByNo = aggregated.associateBy { it.cleanFlightNo }
+        val snapByDep = aggregated.associateBy { it.depTime }
         return routes.sortedBy { it.depTime }.map { r ->
-            val snap = snapByNo[r.flightNo] ?: snapByDep[r.depTime]
+            val cleanRouteNo = FlightNoDecoder.decode(r.flightNo) ?: r.flightNo
+            val snap = snapByNo[cleanRouteNo] ?: snapByDep[r.depTime]
             FlightCandidate(
-                flightNo = r.flightNo,
+                flightNo = cleanRouteNo,
                 depTime = r.depTime,
                 arrTime = r.arrTime,
                 duration = r.duration,
@@ -416,7 +490,7 @@ object RoundTripMatcher {
                 frequency = r.frequency,
                 liveSecCardLeft = snap?.secCardLeft,
                 liveNormalLeft = snap?.normalLeft,
-                liveRedeemPrice = snap?.redeemPrice,
+                liveRedeemPrice = snap?.minRedeemPrice,
                 liveQueriedAt = snap?.queriedAt
             )
         }

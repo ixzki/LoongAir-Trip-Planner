@@ -1,7 +1,6 @@
 package com.loongair.tripplanner.ui.account
 
 import android.annotation.SuppressLint
-import android.net.Uri
 import android.view.ViewGroup
 import android.webkit.JavascriptInterface
 import android.webkit.WebChromeClient
@@ -10,6 +9,7 @@ import android.webkit.WebSettings
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import androidx.annotation.Keep
+import java.net.URI
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.Row
@@ -45,11 +45,13 @@ private val ALLOWED_YIDUN_HOST_SUFFIXES = listOf(
     "ydstatic.com"
 )
 
-internal fun isAllowedCaptchaUrl(uri: Uri?): Boolean {
-    if (uri == null) return false
+internal fun isAllowedCaptchaUrl(rawUrl: String?): Boolean {
+    if (rawUrl.isNullOrBlank()) return false
+    val uri = runCatching { URI(rawUrl.trim()) }.getOrNull() ?: return false
     val scheme = uri.scheme?.lowercase().orEmpty()
     if (scheme == "file") {
-        return uri.path?.startsWith("/android_asset/") == true
+        val path = uri.path.orEmpty()
+        return path.startsWith("/android_asset/") && !path.contains("..")
     }
     if (scheme == "https") {
         val host = uri.host?.lowercase().orEmpty()
@@ -111,7 +113,7 @@ internal fun YidunCaptchaDialog(
                 .fillMaxWidth()
                 .padding(horizontal = 20.dp),
             shape = RoundedCornerShape(24.dp),
-            color = Color.White,
+            color = p.cardBg,
             shadowElevation = 12.dp
         ) {
             Column(
@@ -156,7 +158,7 @@ internal fun YidunCaptchaDialog(
                                     request: WebResourceRequest?
                                 ): Boolean {
                                     // 仅允许本地 asset 入口与易盾官方 HTTPS 域名，拦截任何外部跳转
-                                    return !isAllowedCaptchaUrl(request?.url)
+                                    return !isAllowedCaptchaUrl(request?.url?.toString())
                                 }
                             }
                             webChromeClient = WebChromeClient()

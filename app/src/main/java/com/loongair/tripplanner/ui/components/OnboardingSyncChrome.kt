@@ -499,7 +499,7 @@ fun FirstCitySyncPanel(
         }
         AlertDialog(
             onDismissRequest = { showFullDirectoryDialog = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("选择出发城市 (${officialAirports.size})", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

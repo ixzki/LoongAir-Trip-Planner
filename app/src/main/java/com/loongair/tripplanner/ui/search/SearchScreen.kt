@@ -699,7 +699,7 @@ fun SearchScreen(
         var note by remember { mutableStateOf("") }
         AlertDialog(
             onDismissRequest = { savePlanDraft = null },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("保存往返行程计划", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {

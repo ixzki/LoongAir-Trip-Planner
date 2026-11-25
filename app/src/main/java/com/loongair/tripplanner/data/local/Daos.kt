@@ -103,6 +103,9 @@ interface TripTemplateDao {
     @Query("SELECT * FROM trip_templates ORDER BY sortOrder ASC, id ASC")
     fun observeAll(): Flow<List<TripTemplateEntity>>
 
+    @Query("SELECT * FROM trip_templates ORDER BY sortOrder ASC, id ASC")
+    suspend fun getAll(): List<TripTemplateEntity>
+
     @Query("SELECT COUNT(*) FROM trip_templates")
     suspend fun count(): Int
 

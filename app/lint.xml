@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<lint>
+    <!-- mipmap-anydpi-v26 必须显式保留 -v26 限定符，否则含 monochrome 的 adaptive-icon 会被 AAPT2 自动提升至 -v33 导致 API 26-32 缺失图标 -->
+    <issue id="ObsoleteSdkInt">
+        <ignore regexp=".*mipmap-anydpi-v26.*" />
+    </issue>
+</lint>

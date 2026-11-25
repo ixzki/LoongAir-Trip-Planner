@@ -18,7 +18,7 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         OfficialRouteEntity::class,
         OfficialAirportEntity::class
     ],
-    version = 4,
+    version = 5,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -68,7 +68,6 @@ abstract class AppDatabase : RoomDatabase() {
                     )
                     """.trimIndent()
                 )
-                // 清理旧版本预置的本地种子航班，确保只保留登录并同步后的官方真实航线
                 db.execSQL("DELETE FROM flight_routes WHERE season != 'official'")
             }
         }
@@ -79,7 +78,57 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
-        internal val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4)
+        /**
+         * v4 -> v5 无损迁移：
+         * 1. 将 seat_snapshots 复合主键扩展为包含 cabinCode，防止同一航班多舱位余票互相覆盖；
+         * 2. 为 route_calendar、seat_snapshots、reminders 补齐高频查询二级索引。
+         */
+        internal val MIGRATION_4_5 = object : Migration(4, 5) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                db.execSQL(
+                    """
+                    CREATE TABLE IF NOT EXISTS `seat_snapshots_new` (
+                        `fromCity` TEXT NOT NULL,
+                        `toCity` TEXT NOT NULL,
+                        `flightDate` TEXT NOT NULL,
+                        `flightNo` TEXT NOT NULL,
+                        `depTime` TEXT NOT NULL,
+                        `arrTime` TEXT NOT NULL,
+                        `aircraft` TEXT NOT NULL,
+                        `stopover` TEXT NOT NULL,
+                        `secCardLeft` INTEGER NOT NULL,
+                        `normalLeft` INTEGER NOT NULL,
+                        `redeemPrice` REAL NOT NULL,
+                        `cabinCode` TEXT NOT NULL,
+                        `queriedAt` INTEGER NOT NULL,
+                        PRIMARY KEY(`fromCity`, `toCity`, `flightDate`, `flightNo`, `depTime`, `cabinCode`)
+                    )
+                    """.trimIndent()
+                )
+                db.execSQL(
+                    """
+                    INSERT OR REPLACE INTO `seat_snapshots_new` (
+                        `fromCity`, `toCity`, `flightDate`, `flightNo`, `depTime`,
+                        `arrTime`, `aircraft`, `stopover`, `secCardLeft`, `normalLeft`,
+                        `redeemPrice`, `cabinCode`, `queriedAt`
+                    )
+                    SELECT
+                        `fromCity`, `toCity`, `flightDate`, `flightNo`, `depTime`,
+                        `arrTime`, `aircraft`, `stopover`, `secCardLeft`, `normalLeft`,
+                        `redeemPrice`, `cabinCode`, `queriedAt`
+                    FROM `seat_snapshots`
+                    """.trimIndent()
+                )
+                db.execSQL("DROP TABLE `seat_snapshots`")
+                db.execSQL("ALTER TABLE `seat_snapshots_new` RENAME TO `seat_snapshots`")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_seat_snapshots_flightDate` ON `seat_snapshots` (`flightDate`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_route_calendar_toCity_flightDate` ON `route_calendar` (`toCity`, `flightDate`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_route_calendar_flightDate` ON `route_calendar` (`flightDate`)")
+                db.execSQL("CREATE INDEX IF NOT EXISTS `index_reminders_enabled_fired_triggerAtMillis` ON `reminders` (`enabled`, `fired`, `triggerAtMillis`)")
+            }
+        }
+
+        internal val ALL_MIGRATIONS = arrayOf(MIGRATION_1_2, MIGRATION_2_3, MIGRATION_3_4, MIGRATION_4_5)
 
         fun getInstance(context: Context): AppDatabase {
             return INSTANCE ?: synchronized(this) {

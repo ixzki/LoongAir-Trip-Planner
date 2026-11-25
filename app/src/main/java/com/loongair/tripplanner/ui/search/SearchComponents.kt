@@ -445,7 +445,7 @@ fun CityPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = p.cardBg,
         title = { Text(title, style = LoongType.headline, color = p.textPrimary) },
         text = {
             Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -527,7 +527,7 @@ internal fun TimeWindowPickerDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = p.cardBg,
         title = { Text("设置去程 / 返程起飞时段", style = LoongType.headline, color = p.textPrimary) },
         text = {
             Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {

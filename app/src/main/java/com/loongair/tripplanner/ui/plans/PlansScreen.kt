@@ -670,7 +670,7 @@ private fun AddReminderDialog(
 
     AlertDialog(
         onDismissRequest = onDismiss,
-        containerColor = Color.White,
+        containerColor = p.cardBg,
         title = { Text("设定抢票提醒", style = LoongType.headline, color = p.textPrimary) },
         text = {
             Column(
@@ -799,7 +799,7 @@ private fun AddReminderDialog(
         val tpState = rememberTimePickerState(initialHour = customHour, initialMinute = customMinute, is24Hour = true)
         AlertDialog(
             onDismissRequest = { showTimePicker = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("选择提醒时间", style = LoongType.headline, color = p.textPrimary) },
             text = { TimePicker(state = tpState) },
             confirmButton = {

@@ -28,6 +28,18 @@ data class UserSessionState(
 ) {
     val maskedMobile: String
         get() = if (mobile.length == 11) "${mobile.take(3)}****${mobile.takeLast(4)}" else mobile
+
+    companion object {
+        fun maskGrantId(raw: String): String {
+            val clean = raw.trim()
+            return when {
+                clean.isEmpty() -> "(空)"
+                clean.length <= 4 -> "${clean.first()}***"
+                clean.length <= 7 -> "${clean.take(2)}***${clean.takeLast(1)}"
+                else -> "${clean.take(2)}****${clean.takeLast(2)}"
+            }
+        }
+    }
 }
 
 class AuthPrefs(
@@ -104,7 +116,7 @@ class AuthPrefs(
             homeCity = prefs.getString(KEY_HOME_CITY, "").orEmpty(),
             themeStyle = prefs.getString(KEY_THEME_STYLE, "crimson").orEmpty().ifBlank { "crimson" },
             detectedCards = cards,
-            cardDiagnostic = prefs.getString(KEY_CARD_DIAG, "").orEmpty()
+            cardDiagnostic = getSecret(KEY_CARD_DIAG)
         )
     }
 
@@ -136,7 +148,7 @@ class AuthPrefs(
             .putSecret(KEY_CERT_NO, certNumber)
             .putString(KEY_UPDATED_AT, updatedAt)
             .putSecret(KEY_CARDS_JSON, json.encodeToString(detectedCards))
-            .putString(KEY_CARD_DIAG, cardDiagnostic)
+            .putSecret(KEY_CARD_DIAG, cardDiagnostic)
             .apply()
         _state.value = readState()
     }
@@ -153,7 +165,7 @@ class AuthPrefs(
             .putSecret(KEY_CARDS_JSON, json.encodeToString(cards))
             .putSecret(KEY_SCG_TID, selectedTid)
             .putString(KEY_CARD_NAME, selectedName.ifBlank { current().cardName })
-            .putString(KEY_CARD_DIAG, diagnostic)
+            .putSecret(KEY_CARD_DIAG, diagnostic)
             .putString(KEY_UPDATED_AT, updatedAt)
             .apply()
         _state.value = readState()
@@ -226,7 +238,8 @@ class AuthPrefs(
             KEY_SCG_TID,
             KEY_ENC_UID,
             KEY_CERT_NO,
-            KEY_CARDS_JSON
+            KEY_CARDS_JSON,
+            KEY_CARD_DIAG
         )
     }
 }

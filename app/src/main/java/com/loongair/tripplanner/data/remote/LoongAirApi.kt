@@ -2,6 +2,7 @@ package com.loongair.tripplanner.data.remote
 
 import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.local.FlightRouteEntity
+import com.loongair.tripplanner.data.local.UserSessionState
 import com.loongair.tripplanner.util.ChinaClock
 import com.loongair.tripplanner.util.suspendRunCatching
 import kotlinx.coroutines.CancellationException
@@ -528,7 +529,7 @@ class LoongAirApi(
                 statusHint = statusText
             )
             outMap[tid] = info
-            nestedSummaries.add("$path[$field=$tid, name=${info.cardName}]")
+            nestedSummaries.add("$path[$field=${UserSessionState.maskGrantId(tid)}, name=${info.cardName}]")
         } else if (fallbackHit != null) {
             val (field, tid) = fallbackHit
             val existing = outMap[tid]
@@ -541,7 +542,7 @@ class LoongAirApi(
                     statusHint = statusText
                 )
                 outMap[tid] = info
-                nestedSummaries.add("$path[$field=$tid, name=${info.cardName}]")
+                nestedSummaries.add("$path[$field=${UserSessionState.maskGrantId(tid)}, name=${info.cardName}]")
             }
         }
 

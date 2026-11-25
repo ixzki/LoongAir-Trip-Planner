@@ -322,7 +322,7 @@ fun AccountScreen(viewModel: MainViewModel) {
     if (showSyncOtherCityDialog) {
         AlertDialog(
             onDismissRequest = { showSyncOtherCityDialog = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("同步其他城市全部航线", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(
@@ -363,7 +363,7 @@ fun AccountScreen(viewModel: MainViewModel) {
         val dests = searchState.officialAllowedDestinations.orEmpty()
         AlertDialog(
             onDismissRequest = { showOfficialDestsDialog = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("${session.homeCity}出发 · 已同步航线 (${dests.size})", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(
@@ -411,7 +411,7 @@ fun AccountScreen(viewModel: MainViewModel) {
         var manualTid by remember(session.secCardGrantTid) { mutableStateOf(session.secCardGrantTid) }
         AlertDialog(
             onDismissRequest = { showManualDialog = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("手动凭证 / scgTid 设置", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
@@ -480,7 +480,7 @@ fun AccountScreen(viewModel: MainViewModel) {
         val diagText = session.cardDiagnostic.ifBlank { "暂无诊断记录，请先点击「重新同步卡包」。" }
         AlertDialog(
             onDismissRequest = { showDiagnosticDialog = false },
-            containerColor = Color.White,
+            containerColor = p.cardBg,
             title = { Text("卡包同步诊断（已脱敏）", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(
@@ -491,7 +491,7 @@ fun AccountScreen(viewModel: MainViewModel) {
                     verticalArrangement = Arrangement.spacedBy(8.dp)
                 ) {
                     Text(
-                        "当前选用 scgTid：${session.secCardGrantTid.ifBlank { "(空)" }}\n已识别卡数：${session.detectedCards.size}",
+                        "当前选用 scgTid：${UserSessionState.maskGrantId(session.secCardGrantTid)}\n已识别卡数：${session.detectedCards.size}",
                         style = LoongType.footnoteStrong.copy(fontFeatureSettings = "tnum"),
                         color = p.primary
                     )
