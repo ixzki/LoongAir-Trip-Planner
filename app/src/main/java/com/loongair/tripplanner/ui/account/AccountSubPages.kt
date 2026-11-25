@@ -9,6 +9,8 @@ import androidx.compose.foundation.border
 import androidx.compose.foundation.layout.Arrangement
 import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.ExperimentalLayoutApi
+import androidx.compose.foundation.layout.FlowRow
 import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
@@ -39,12 +41,16 @@ import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.RadioButton
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
@@ -59,7 +65,10 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import androidx.core.view.WindowCompat
 import com.loongair.tripplanner.BuildConfig
+import com.loongair.tripplanner.data.local.InvalidatedRouteEntity
 import com.loongair.tripplanner.data.local.UserSessionState
+import com.loongair.tripplanner.data.remote.CityIataMapper
+import com.loongair.tripplanner.data.repository.NetworkRouteSummary
 import com.loongair.tripplanner.ui.components.GroupedSectionLabel
 import com.loongair.tripplanner.ui.components.SoftCard
 import com.loongair.tripplanner.ui.components.TintedIconBadge
@@ -851,5 +860,394 @@ internal fun SettingsRowItem(
                 modifier = Modifier.size(16.dp)
             )
         }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+internal fun NetworkManageSubPage(
+    activeHomeCity: String,
+    isLoggedIn: Boolean,
+    officialSyncing: Boolean,
+    officialSyncedCount: Int,
+    bundledRouteCount: Int,
+    homeDestinations: List<String>,
+    soldOutRoutes: List<NetworkRouteSummary>,
+    invalidatedRoutes: List<InvalidatedRouteEntity>,
+    onBack: () -> Unit,
+    onRefreshHomeCity: () -> Unit,
+    onSelectDestination: (String) -> Unit,
+    onRefreshAllSoldOut: () -> Unit,
+    onRestoreInvalidated: (String, String) -> Unit
+) {
+    val p = LocalLoongPalette.current
+    var selectedTab by remember { mutableIntStateOf(0) }
+    val liveVerifiedCount = (officialSyncedCount - bundledRouteCount).coerceAtLeast(0)
+    val sortedHomeDestinations = remember(homeDestinations) {
+        homeDestinations.distinct().sortedBy { CityIataMapper.pinyinForCity(it) }
+    }
+
+    Column(
+        modifier = Modifier
+            .fillMaxSize()
+            .background(p.pageBg)
+    ) {
+        SubPageHeader(title = "畅飞航网管理", onBack = onBack)
+
+        LazyColumn(
+            modifier = Modifier.fillMaxSize(),
+            contentPadding = PaddingValues(
+                start = AppSpace.groupInset,
+                end = AppSpace.groupInset,
+                top = 8.dp,
+                bottom = 36.dp
+            ),
+            verticalArrangement = Arrangement.spacedBy(AppSpace.cardGap)
+        ) {
+            // 1. 航网统计总览卡（与「卡片」页顶部主卡一致）
+            item(key = "overview") {
+                SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceEvenly,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        NetworkMetricColumn(
+                            value = "$officialSyncedCount",
+                            label = "有效航线",
+                            valueColor = p.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(AppSpace.hairline)
+                                .height(28.dp)
+                                .background(p.separator)
+                        )
+                        NetworkMetricColumn(
+                            value = "${soldOutRoutes.size}",
+                            label = "近期全约满",
+                            valueColor = if (soldOutRoutes.isNotEmpty()) p.warning else p.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                        Box(
+                            modifier = Modifier
+                                .width(AppSpace.hairline)
+                                .height(28.dp)
+                                .background(p.separator)
+                        )
+                        NetworkMetricColumn(
+                            value = "${invalidatedRoutes.size}",
+                            label = "已移出/停航",
+                            valueColor = if (invalidatedRoutes.isNotEmpty()) p.danger else p.textPrimary,
+                            modifier = Modifier.weight(1f)
+                        )
+                    }
+                    Spacer(Modifier.height(10.dp))
+                    Surface(
+                        color = p.subtleSurface,
+                        shape = RoundedCornerShape(10.dp),
+                        modifier = Modifier.fillMaxWidth()
+                    ) {
+                        Text(
+                            text = "实时校验 $liveVerifiedCount 条 · 内置基准 $bundledRouteCount 条",
+                            style = LoongType.caption.copy(fontFeatureSettings = "tnum"),
+                            color = p.textSecondary,
+                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 7.dp)
+                        )
+                    }
+                    Spacer(Modifier.height(14.dp))
+                    Button(
+                        enabled = !officialSyncing,
+                        shape = RoundedCornerShape(AppRadii.full),
+                        onClick = onRefreshHomeCity,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(48.dp)
+                            .bounceOnTouch(enabled = !officialSyncing)
+                    ) {
+                        if (officialSyncing) {
+                            CircularProgressIndicator(
+                                modifier = Modifier.size(16.dp),
+                                strokeWidth = 2.dp,
+                                color = Color.White
+                            )
+                        } else {
+                            Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(18.dp))
+                        }
+                        Spacer(Modifier.width(6.dp))
+                        Text(
+                            text = if (officialSyncing) "正在同步航线..." else "刷新常驻城（$activeHomeCity）航线",
+                            style = LoongType.rowLabel.copy(fontWeight = FontWeight.SemiBold)
+                        )
+                    }
+                }
+            }
+
+            // 2. 分段标签切换卡
+            item(key = "tabs") {
+                SoftCard(cornerRadius = AppRadii.card, contentPadding = 6.dp) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        val tabs = listOf(
+                            "$activeHomeCity (${sortedHomeDestinations.size})",
+                            "全约满 (${soldOutRoutes.size})",
+                            "已移出 (${invalidatedRoutes.size})"
+                        )
+                        tabs.forEachIndexed { idx, label ->
+                            val selected = selectedTab == idx
+                            Box(
+                                modifier = Modifier
+                                    .weight(1f)
+                                    .clip(RoundedCornerShape(14.dp))
+                                    .background(if (selected) p.primary else Color.Transparent)
+                                    .pressScale(
+                                        scaleDown = AppPressScale.CONTROL,
+                                        haptic = true,
+                                        onClick = { selectedTab = idx }
+                                    )
+                                    .padding(vertical = 10.dp),
+                                contentAlignment = Alignment.Center
+                            ) {
+                                Text(
+                                    text = label,
+                                    style = LoongType.footnoteStrong.copy(fontFeatureSettings = "tnum"),
+                                    color = if (selected) Color.White else p.textSecondary,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
+                        }
+                    }
+                }
+            }
+
+            // 3. 分页内容区
+            when (selectedTab) {
+                0 -> {
+                    item(key = "home_dests") {
+                        SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
+                            Text(
+                                text = "从 $activeHomeCity 可达目的地（点击设为往返搜索目标）",
+                                style = LoongType.footnote,
+                                color = p.textSecondary
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            if (sortedHomeDestinations.isEmpty()) {
+                                Text(
+                                    text = "尚未同步「$activeHomeCity」航线，请点击上方按钮刷新。",
+                                    style = LoongType.footnote,
+                                    color = p.textTertiary
+                                )
+                            } else {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                                ) {
+                                    sortedHomeDestinations.forEach { city ->
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(11.dp))
+                                                .background(p.subtleSurface)
+                                                .border(0.6.dp, p.border, RoundedCornerShape(11.dp))
+                                                .pressScale(
+                                                    scaleDown = AppPressScale.CONTROL,
+                                                    haptic = true,
+                                                    onClick = { onSelectDestination(city) }
+                                                )
+                                                .padding(horizontal = 15.dp, vertical = 9.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = city,
+                                                style = LoongType.filter.copy(fontWeight = FontWeight.Medium),
+                                                color = p.textPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                1 -> {
+                    item(key = "sold_out_card") {
+                        SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
+                            Text(
+                                text = "以下航线仍在畅飞卡适用范围内，仅近期已放票日期名额全部约满（非移出卡外）；可在每日 10:00 开抢新窗或临近出行前巡检退票回流。",
+                                style = LoongType.footnote,
+                                color = p.textSecondary
+                            )
+                            if (soldOutRoutes.isNotEmpty() && isLoggedIn) {
+                                Spacer(Modifier.height(12.dp))
+                                OutlinedButton(
+                                    enabled = !officialSyncing,
+                                    shape = RoundedCornerShape(AppRadii.full),
+                                    border = BorderStroke(1.dp, p.primary.copy(alpha = 0.45f)),
+                                    onClick = onRefreshAllSoldOut,
+                                    modifier = Modifier
+                                        .fillMaxWidth()
+                                        .height(44.dp)
+                                        .bounceOnTouch(enabled = !officialSyncing)
+                                ) {
+                                    Icon(
+                                        Icons.Default.Refresh,
+                                        contentDescription = null,
+                                        tint = p.primary,
+                                        modifier = Modifier.size(16.dp)
+                                    )
+                                    Spacer(Modifier.width(6.dp))
+                                    Text(
+                                        "一键巡检全部约满航线余票",
+                                        style = LoongType.footnoteStrong,
+                                        color = p.primary
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.height(12.dp))
+                            if (soldOutRoutes.isEmpty()) {
+                                Text(
+                                    text = "当前全网暂无近期全部约满的航线。",
+                                    style = LoongType.footnote,
+                                    color = p.textTertiary
+                                )
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    soldOutRoutes.forEach { r ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(p.warningBg)
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "${r.fromCity} → ${r.toCity}",
+                                                    style = LoongType.rowLabel,
+                                                    color = p.textPrimary
+                                                )
+                                                Text(
+                                                    text = if (r.flights.isNotEmpty()) {
+                                                        "已有时刻 ${r.flights.size} 班 · 近 ${r.soldOutDaysCount} 天约满"
+                                                    } else {
+                                                        "近 ${r.soldOutDaysCount} 个放票日约满（有余票即自动抓取时刻）"
+                                                    },
+                                                    style = LoongType.caption,
+                                                    color = p.warning
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+
+                else -> {
+                    item(key = "invalidated_card") {
+                        SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
+                            Text(
+                                text = "以下航线经官方接口确认已下线、停航无班或超出当前畅飞卡适用范围，已从本地与内置基准库自动剔除。",
+                                style = LoongType.footnote,
+                                color = p.textSecondary
+                            )
+                            Spacer(Modifier.height(12.dp))
+                            if (invalidatedRoutes.isEmpty()) {
+                                Text(
+                                    text = "当前暂未检测到被移出或停航失效的航线。",
+                                    style = LoongType.footnote,
+                                    color = p.textTertiary
+                                )
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(8.dp)) {
+                                    invalidatedRoutes.forEach { inv ->
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .clip(RoundedCornerShape(14.dp))
+                                                .background(p.dangerBg)
+                                                .padding(horizontal = 14.dp, vertical = 12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(
+                                                modifier = Modifier.weight(1f),
+                                                verticalArrangement = Arrangement.spacedBy(2.dp)
+                                            ) {
+                                                Text(
+                                                    text = "${inv.fromCity} → ${inv.toCity}",
+                                                    style = LoongType.rowLabel,
+                                                    color = p.textPrimary
+                                                )
+                                                Text(
+                                                    text = inv.reason,
+                                                    style = LoongType.caption,
+                                                    color = p.danger
+                                                )
+                                            }
+                                            Spacer(Modifier.width(8.dp))
+                                            Box(
+                                                modifier = Modifier
+                                                    .clip(RoundedCornerShape(AppRadii.full))
+                                                    .background(p.cardBg)
+                                                    .pressScale(
+                                                        scaleDown = AppPressScale.CONTROL,
+                                                        haptic = true,
+                                                        onClick = { onRestoreInvalidated(inv.fromCity, inv.toCity) }
+                                                    )
+                                                    .padding(horizontal = 12.dp, vertical = 6.dp)
+                                            ) {
+                                                Text(
+                                                    text = "重检",
+                                                    style = LoongType.caption.copy(fontWeight = FontWeight.SemiBold),
+                                                    color = p.primary
+                                                )
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun NetworkMetricColumn(
+    value: String,
+    label: String,
+    valueColor: Color,
+    modifier: Modifier = Modifier
+) {
+    val p = LocalLoongPalette.current
+    Column(
+        modifier = modifier,
+        horizontalAlignment = Alignment.CenterHorizontally,
+        verticalArrangement = Arrangement.spacedBy(2.dp)
+    ) {
+        Text(
+            text = value,
+            style = LoongType.title2.copy(fontFeatureSettings = "tnum"),
+            color = valueColor
+        )
+        Text(
+            text = label,
+            style = LoongType.caption,
+            color = p.textTertiary
+        )
     }
 }

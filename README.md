@@ -52,9 +52,9 @@
 
 前往 GitHub Releases 页面下载已混淆压缩的正式版安装包（仅约 `2 MB`，支持 Android 8.0 及以上设备）：
 
-👉 **[前往 Releases 下载 ChangfeiXing-v1.8.1-release.apk](https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest)**
+👉 **[前往 Releases 下载 ChangfeiXing-v1.8.2-release.apk](https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest)**
 
-1. 下载并安装 **`ChangfeiXing-v1.8.1-release.apk`**；
+1. 下载并安装 **`ChangfeiXing-v1.8.2-release.apk`**；
 2. 安装即内置全网 **75 城 · 410 条畅飞卡航线与 445 条班次时刻**，冷启动全屏动画结束后即可直接浏览全国航网与试算往返；
 3. 前往「**我的**」→「**登录**」，输入手机号并通过内置网易易盾拼图滑块完成短信验证，即可自动识别名下畅飞卡、同步常驻城市实时放票日历与余票。
 
@@ -117,8 +117,8 @@ $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 ```
 
 输出 APK 路径：
-- Release APK（已开启 R8 混淆与资源压缩）：`app/build/outputs/apk/release/ChangfeiXing-v1.8.1-release.apk`
-- Debug APK：`app/build/outputs/apk/debug/ChangfeiXing-v1.8.1-debug.apk`
+- Release APK（已开启 R8 混淆与资源压缩）：`app/build/outputs/apk/release/ChangfeiXing-v1.8.2-release.apk`
+- Debug APK：`app/build/outputs/apk/debug/ChangfeiXing-v1.8.2-debug.apk`
 
 ---
 

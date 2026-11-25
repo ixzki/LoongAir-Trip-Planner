@@ -1,5 +1,6 @@
 package com.loongair.tripplanner.ui.search
 
+import android.app.Activity
 import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.animateFloatAsState
@@ -7,24 +8,39 @@ import androidx.compose.animation.expandVertically
 import androidx.compose.animation.fadeIn
 import androidx.compose.animation.fadeOut
 import androidx.compose.animation.shrinkVertically
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
+import androidx.compose.foundation.border
+import androidx.compose.foundation.gestures.awaitEachGesture
+import androidx.compose.foundation.gestures.awaitFirstDown
 import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Box
 import androidx.compose.foundation.layout.Column
 import androidx.compose.foundation.layout.ExperimentalLayoutApi
 import androidx.compose.foundation.layout.FlowRow
+import androidx.compose.foundation.layout.PaddingValues
 import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
 import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.navigationBarsPadding
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
+import androidx.compose.foundation.layout.statusBarsPadding
 import androidx.compose.foundation.layout.width
 import androidx.compose.foundation.lazy.LazyColumn
 import androidx.compose.foundation.lazy.items
+import androidx.compose.foundation.lazy.rememberLazyListState
+import androidx.compose.foundation.shape.CircleShape
 import androidx.compose.foundation.shape.RoundedCornerShape
+import androidx.compose.foundation.text.BasicTextField
 import androidx.compose.material.icons.Icons
+import androidx.compose.material.icons.automirrored.filled.KeyboardArrowLeft
 import androidx.compose.material.icons.filled.BookmarkAdd
+import androidx.compose.material.icons.filled.Close
 import androidx.compose.material.icons.filled.ExpandMore
 import androidx.compose.material.icons.filled.FlightLand
 import androidx.compose.material.icons.filled.FlightTakeoff
@@ -44,19 +60,35 @@ import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.SideEffect
+import androidx.compose.runtime.compositionLocalOf
+import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.draw.clip
 import androidx.compose.ui.graphics.Color
+import androidx.compose.ui.graphics.SolidColor
 import androidx.compose.ui.graphics.graphicsLayer
+import androidx.compose.ui.input.pointer.pointerInput
+import androidx.compose.ui.layout.onSizeChanged
+import androidx.compose.ui.platform.LocalView
 import androidx.compose.ui.text.font.FontWeight
+import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.compose.ui.window.Dialog
+import androidx.compose.ui.window.DialogProperties
+import androidx.compose.ui.window.DialogWindowProvider
+import androidx.core.view.WindowCompat
+import com.loongair.tripplanner.ui.components.chhersShadow
+import kotlinx.coroutines.launch
 import com.loongair.tripplanner.data.remote.CityIataMapper
 import com.loongair.tripplanner.data.remote.CityMeta
 import com.loongair.tripplanner.data.repository.FlightCandidate
@@ -421,92 +453,558 @@ private fun FlightOptionRow(
     }
 }
 
+private data class CityLetterSection(
+    val letter: Char,
+    val cities: List<String>
+)
+
+data class CityPickerRequest(
+    val key: Any,
+    val title: String,
+    val cities: List<String>,
+    val cityMetaMap: Map<String, CityMeta>,
+    val allowAll: Boolean,
+    val subtitle: String = "",
+    val trailingAction: (@Composable () -> Unit)? = null,
+    val onDismiss: () -> Unit,
+    val onSelect: (String) -> Unit
+)
+
+class CityPickerController {
+    var activeRequest by mutableStateOf<CityPickerRequest?>(null)
+        internal set
+
+    fun show(request: CityPickerRequest) {
+        activeRequest = request
+    }
+
+    fun dismiss(key: Any) {
+        if (activeRequest?.key === key) {
+            activeRequest = null
+        }
+    }
+}
+
+val LocalCityPickerController = compositionLocalOf<CityPickerController?> { null }
+
 @Composable
 fun CityPickerDialog(
     title: String,
     cities: List<String>,
     cityMetaMap: Map<String, CityMeta>,
     allowAll: Boolean,
+    subtitle: String = "",
+    trailingAction: (@Composable () -> Unit)? = null,
     onDismiss: () -> Unit,
     onSelect: (String) -> Unit
 ) {
+    val controller = LocalCityPickerController.current
+    val requestKey = remember { Any() }
+    val request = CityPickerRequest(
+        key = requestKey,
+        title = title,
+        cities = cities,
+        cityMetaMap = cityMetaMap,
+        allowAll = allowAll,
+        subtitle = subtitle,
+        trailingAction = trailingAction,
+        onDismiss = onDismiss,
+        onSelect = onSelect
+    )
+    if (controller != null) {
+        SideEffect {
+            controller.show(request)
+        }
+        DisposableEffect(controller, requestKey) {
+            onDispose {
+                controller.dismiss(requestKey)
+            }
+        }
+    } else {
+        Dialog(
+            onDismissRequest = onDismiss,
+            properties = DialogProperties(
+                usePlatformDefaultWidth = false,
+                decorFitsSystemWindows = false
+            )
+        ) {
+            CityPickerFullScreenContent(request = request)
+        }
+    }
+}
+
+@OptIn(ExperimentalLayoutApi::class)
+@Composable
+fun CityPickerFullScreenContent(
+    request: CityPickerRequest
+) {
+    val title = request.title
+    val cities = request.cities
+    val cityMetaMap = request.cityMetaMap
+    val allowAll = request.allowAll
+    val subtitle = request.subtitle
+    val trailingAction = request.trailingAction
+    val onDismiss = request.onDismiss
+    val onSelect = request.onSelect
+
     val p = LocalLoongPalette.current
-    var query by remember { mutableStateOf("") }
-    val filtered = remember(query, cities) {
-        val q = query.trim().lowercase()
-        if (q.isEmpty()) cities else cities.filter { c ->
-            val meta = cityMetaMap[c]
-            c.lowercase().contains(q) ||
-                (meta?.pinyin?.lowercase()?.contains(q) == true) ||
-                (meta?.code?.lowercase()?.contains(q) == true) ||
-                (meta?.province?.lowercase()?.contains(q) == true)
+    val scope = rememberCoroutineScope()
+    val listState = rememberLazyListState()
+    var query by remember(request.key) { mutableStateOf("") }
+    var activeScrubLetter by remember(request.key) { mutableStateOf<Char?>(null) }
+    var indexBarHeightPx by remember { mutableStateOf(1) }
+
+    // 与「卡片」「设置」子页完全一致：暖纸底直通状态栏 + 深色状态栏图标，退出后自动恢复主题状态栏
+    val view = LocalView.current
+    DisposableEffect(view, p.lightStatusBarIcons) {
+        val window = (view.parent as? DialogWindowProvider)?.window ?: (view.context as? Activity)?.window
+        val controller = window?.let { WindowCompat.getInsetsController(it, view) }
+        controller?.isAppearanceLightStatusBars = true
+        onDispose {
+            controller?.isAppearanceLightStatusBars = p.lightStatusBarIcons
         }
     }
 
-    AlertDialog(
-        onDismissRequest = onDismiss,
-        containerColor = p.cardBg,
-        title = { Text(title, style = LoongType.headline, color = p.textPrimary) },
-        text = {
-            Column(modifier = Modifier.fillMaxWidth(), verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                OutlinedTextField(
-                    value = query,
-                    onValueChange = { query = it },
-                    placeholder = { Text("搜索城市 / 拼音 / 三字码", style = LoongType.footnote) },
-                    leadingIcon = { Icon(Icons.Default.Search, contentDescription = null) },
-                    singleLine = true,
-                    shape = RoundedCornerShape(14.dp),
-                    modifier = Modifier.fillMaxWidth()
-                )
-                LazyColumn(modifier = Modifier.height(310.dp)) {
-                    if (allowAll) {
-                        item(key = "__ALL__") {
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .pressHighlight(cornerRadius = 12.dp, onClick = { onSelect("") })
-                                    .padding(vertical = 12.dp, horizontal = 8.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Text("全部可达城市", style = LoongType.rowLabel.copy(fontWeight = FontWeight.SemiBold), color = p.primary)
-                                Text("${cities.size} 座城市", style = LoongType.footnote, color = p.textTertiary)
-                            }
-                            HorizontalDivider(thickness = AppSpace.hairline, color = p.separator)
-                        }
+    val groupedSections = remember(cities, cityMetaMap) {
+        cities.distinct()
+            .groupBy { city ->
+                CityIataMapper.initialLetterForCity(city, cityMetaMap[city]?.pinyin.orEmpty())
+            }
+            .entries
+            .sortedWith(compareBy<Map.Entry<Char, List<String>>> { it.key == '#' }.thenBy { it.key })
+            .map { (letter, list) ->
+                CityLetterSection(
+                    letter = letter,
+                    cities = list.sortedBy { c ->
+                        CityIataMapper.pinyinForCity(c, cityMetaMap[c]?.pinyin.orEmpty())
                     }
-                    items(filtered, key = { it }) { city ->
-                        val meta = cityMetaMap[city]
-                        Row(
+                )
+            }
+    }
+
+    val filtered = remember(query, cities, cityMetaMap) {
+        val q = query.trim().lowercase()
+        if (q.isEmpty()) {
+            emptyList()
+        } else {
+            cities.distinct().filter { c ->
+                val meta = cityMetaMap[c]
+                val py = CityIataMapper.pinyinForCity(c, meta?.pinyin.orEmpty())
+                val code = (meta?.code?.ifBlank { null } ?: CityIataMapper.toApiIata(c)).lowercase()
+                c.lowercase().contains(q) ||
+                    py.contains(q) ||
+                    (meta?.pinyin?.lowercase()?.contains(q) == true) ||
+                    code.contains(q) ||
+                    (meta?.airport?.lowercase()?.contains(q) == true) ||
+                    (meta?.province?.lowercase()?.contains(q) == true)
+            }.sortedBy { c ->
+                CityIataMapper.pinyinForCity(c, cityMetaMap[c]?.pinyin.orEmpty())
+            }
+        }
+    }
+
+    val sectionLetters = remember(groupedSections) { groupedSections.map { it.letter } }
+    val allItemOffset = if (allowAll) 1 else 0
+    val currentVisibleLetter by remember(groupedSections, allItemOffset) {
+        derivedStateOf {
+            val idx = (listState.firstVisibleItemIndex - allItemOffset)
+                .coerceIn(0, (groupedSections.size - 1).coerceAtLeast(0))
+            groupedSections.getOrNull(idx)?.letter
+        }
+    }
+
+    Surface(
+        modifier = Modifier.fillMaxSize(),
+        color = p.pageBg
+    ) {
+        Column(
+            modifier = Modifier
+                .fillMaxSize()
+                .navigationBarsPadding()
+        ) {
+            // 复用「卡片」页同款大标题头部：38dp 纯白柔影圆钮 + 32sp 大标题 + 暖纸搜索胶囊
+            Column(
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .statusBarsPadding()
+                    .padding(start = 14.dp, end = AppSpace.screen, top = 8.dp, bottom = 10.dp),
+                verticalArrangement = Arrangement.spacedBy(10.dp)
+            ) {
+                Row(
+                    modifier = Modifier.fillMaxWidth(),
+                    horizontalArrangement = Arrangement.SpaceBetween,
+                    verticalAlignment = Alignment.CenterVertically
+                ) {
+                    Box(
+                        modifier = Modifier
+                            .size(44.dp)
+                            .pressScale(scaleDown = AppPressScale.CONTROL, haptic = true, onClick = onDismiss),
+                        contentAlignment = Alignment.Center
+                    ) {
+                        Box(
                             modifier = Modifier
-                                .fillMaxWidth()
-                                .pressHighlight(cornerRadius = 12.dp, onClick = { onSelect(city) })
-                                .padding(vertical = 11.dp, horizontal = 8.dp),
-                            horizontalArrangement = Arrangement.SpaceBetween,
-                            verticalAlignment = Alignment.CenterVertically
+                                .size(38.dp)
+                                .chhersShadow(
+                                    cornerRadius = 19.dp,
+                                    floating = false,
+                                    tint = p.shadowTint
+                                )
+                                .clip(CircleShape)
+                                .background(p.cardBg),
+                            contentAlignment = Alignment.Center
                         ) {
-                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                                Text(city, style = LoongType.rowLabel, color = p.textPrimary)
-                                meta?.let {
-                                    Text("${it.province} · ${it.airport}", style = LoongType.footnote, color = p.textTertiary)
-                                }
-                            }
-                            Text(
-                                CityIataMapper.toApiIata(city),
-                                style = LoongType.filter,
-                                color = p.primary
+                            Icon(
+                                imageVector = Icons.AutoMirrored.Filled.KeyboardArrowLeft,
+                                contentDescription = "返回",
+                                tint = p.textPrimary,
+                                modifier = Modifier.size(22.dp)
                             )
                         }
-                        HorizontalDivider(thickness = AppSpace.hairline, color = p.separator)
+                    }
+                    if (trailingAction != null) {
+                        trailingAction()
+                    }
+                }
+
+                Column(
+                    modifier = Modifier.padding(horizontal = 4.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    Text(
+                        text = title,
+                        style = LoongType.largeTitle,
+                        color = p.textPrimary,
+                        maxLines = 1,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    if (subtitle.isNotBlank()) {
+                        Text(
+                            text = subtitle,
+                            style = LoongType.footnote,
+                            color = p.textSecondary
+                        )
+                    }
+                }
+
+                // 同款纯白柔影胶囊搜索栏
+                Row(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .padding(horizontal = 2.dp)
+                        .chhersShadow(
+                            cornerRadius = 22.dp,
+                            floating = false,
+                            tint = p.shadowTint
+                        )
+                        .clip(RoundedCornerShape(AppRadii.full))
+                        .background(p.cardBg)
+                        .border(0.6.dp, p.border, RoundedCornerShape(AppRadii.full))
+                        .height(44.dp)
+                        .padding(horizontal = 14.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                ) {
+                    Icon(
+                        imageVector = Icons.Default.Search,
+                        contentDescription = null,
+                        tint = p.primary,
+                        modifier = Modifier.size(18.dp)
+                    )
+                    Box(
+                        modifier = Modifier.weight(1f),
+                        contentAlignment = Alignment.CenterStart
+                    ) {
+                        if (query.isEmpty()) {
+                            Text(
+                                text = "搜索中文 / 拼音 / 首字母 / 三字码",
+                                style = LoongType.footnote.copy(fontSize = 14.sp),
+                                color = p.textTertiary,
+                                maxLines = 1,
+                                overflow = TextOverflow.Ellipsis
+                            )
+                        }
+                        BasicTextField(
+                            value = query,
+                            onValueChange = { query = it },
+                            singleLine = true,
+                            textStyle = LoongType.rowLabel.copy(color = p.textPrimary, fontSize = 14.sp),
+                            cursorBrush = SolidColor(p.primary),
+                            modifier = Modifier.fillMaxWidth()
+                        )
+                    }
+                    if (query.isNotEmpty()) {
+                        Box(
+                            modifier = Modifier
+                                .size(24.dp)
+                                .clip(CircleShape)
+                                .background(p.subtleSurface)
+                                .pressScale(scaleDown = AppPressScale.CONTROL, haptic = false, onClick = { query = "" }),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Icon(
+                                imageVector = Icons.Default.Close,
+                                contentDescription = "清空",
+                                tint = p.textSecondary,
+                                modifier = Modifier.size(14.dp)
+                            )
+                        }
                     }
                 }
             }
-        },
-        confirmButton = {},
-        dismissButton = {
-            TextButton(onClick = onDismiss) { Text("关闭", style = LoongType.filter) }
+
+            // 主体内容：A-Z 分组卡片 + 右侧首字母导航条（搜索时切为精准匹配列表）
+            Box(
+                modifier = Modifier
+                    .weight(1f)
+                    .fillMaxWidth()
+            ) {
+                if (query.isNotBlank()) {
+                    LazyColumn(
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(horizontal = AppSpace.groupInset, vertical = 6.dp),
+                        verticalArrangement = Arrangement.spacedBy(8.dp)
+                    ) {
+                        if (filtered.isEmpty()) {
+                            item(key = "__EMPTY__") {
+                                SoftCard(cornerRadius = AppRadii.card, contentPadding = 24.dp) {
+                                    Text(
+                                        text = "未找到包含「$query」的城市",
+                                        style = LoongType.footnote,
+                                        color = p.textTertiary,
+                                        textAlign = TextAlign.Center,
+                                        modifier = Modifier.fillMaxWidth()
+                                    )
+                                }
+                            }
+                        } else {
+                            item(key = "__RESULTS__") {
+                                SoftCard(cornerRadius = AppRadii.card, contentPadding = 6.dp) {
+                                    filtered.forEachIndexed { idx, city ->
+                                        val meta = cityMetaMap[city]
+                                        Row(
+                                            modifier = Modifier
+                                                .fillMaxWidth()
+                                                .pressHighlight(cornerRadius = 12.dp, onClick = { onSelect(city) })
+                                                .padding(vertical = 12.dp, horizontal = 12.dp),
+                                            horizontalArrangement = Arrangement.SpaceBetween,
+                                            verticalAlignment = Alignment.CenterVertically
+                                        ) {
+                                            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
+                                                Text(city, style = LoongType.rowLabel, color = p.textPrimary)
+                                                val sub = listOfNotNull(
+                                                    meta?.province?.takeIf { it.isNotBlank() },
+                                                    meta?.airport?.takeIf { it.isNotBlank() }
+                                                ).joinToString(" · ")
+                                                if (sub.isNotBlank()) {
+                                                    Text(sub, style = LoongType.footnote, color = p.textTertiary)
+                                                }
+                                            }
+                                            TonePillBadge(
+                                                text = meta?.code?.ifBlank { null } ?: CityIataMapper.toApiIata(city),
+                                                backgroundColor = p.primarySoftBg,
+                                                contentColor = p.primary,
+                                                cornerRadius = 8.dp
+                                            )
+                                        }
+                                        if (idx < filtered.lastIndex) {
+                                            HorizontalDivider(
+                                                thickness = AppSpace.hairline,
+                                                color = p.separator,
+                                                modifier = Modifier.padding(horizontal = 12.dp)
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                } else {
+                    LazyColumn(
+                        state = listState,
+                        modifier = Modifier.fillMaxSize(),
+                        contentPadding = PaddingValues(start = AppSpace.groupInset, end = 34.dp, top = 6.dp, bottom = 28.dp),
+                        verticalArrangement = Arrangement.spacedBy(AppSpace.cardGap)
+                    ) {
+                        if (allowAll) {
+                            item(key = "__ALL__") {
+                                SoftCard(cornerRadius = AppRadii.card, contentPadding = 14.dp) {
+                                    Row(
+                                        modifier = Modifier
+                                            .fillMaxWidth()
+                                            .pressHighlight(cornerRadius = 12.dp, onClick = { onSelect("") })
+                                            .padding(horizontal = 4.dp, vertical = 4.dp),
+                                        horizontalArrangement = Arrangement.SpaceBetween,
+                                        verticalAlignment = Alignment.CenterVertically
+                                    ) {
+                                        Text(
+                                            text = "全部可达城市",
+                                            style = LoongType.rowLabel.copy(fontWeight = FontWeight.SemiBold),
+                                            color = p.primary
+                                        )
+                                        TonePillBadge(
+                                            text = "${cities.distinct().size} 座城市",
+                                            backgroundColor = p.primarySoftBg,
+                                            contentColor = p.primary,
+                                            cornerRadius = 8.dp
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        items(groupedSections, key = { it.letter.toString() }) { section ->
+                            SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
+                                Row(
+                                    verticalAlignment = Alignment.CenterVertically,
+                                    horizontalArrangement = Arrangement.spacedBy(8.dp)
+                                ) {
+                                    Box(
+                                        modifier = Modifier
+                                            .size(26.dp)
+                                            .clip(RoundedCornerShape(8.dp))
+                                            .background(p.primarySoftBg),
+                                        contentAlignment = Alignment.Center
+                                    ) {
+                                        Text(
+                                            text = section.letter.toString(),
+                                            style = LoongType.filter.copy(fontWeight = FontWeight.Bold),
+                                            color = p.primary
+                                        )
+                                    }
+                                    Text(
+                                        text = "${section.cities.size} 城",
+                                        style = LoongType.caption,
+                                        color = p.textTertiary
+                                    )
+                                }
+                                Spacer(Modifier.height(12.dp))
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(9.dp),
+                                    verticalArrangement = Arrangement.spacedBy(9.dp)
+                                ) {
+                                    section.cities.forEach { city ->
+                                        Box(
+                                            modifier = Modifier
+                                                .clip(RoundedCornerShape(11.dp))
+                                                .background(p.subtleSurface)
+                                                .border(0.6.dp, p.border, RoundedCornerShape(11.dp))
+                                                .pressScale(
+                                                    scaleDown = AppPressScale.CONTROL,
+                                                    haptic = true,
+                                                    onClick = { onSelect(city) }
+                                                )
+                                                .padding(horizontal = 15.dp, vertical = 9.dp),
+                                            contentAlignment = Alignment.Center
+                                        ) {
+                                            Text(
+                                                text = city,
+                                                style = LoongType.filter.copy(fontWeight = FontWeight.Medium),
+                                                color = p.textPrimary,
+                                                maxLines = 1
+                                            )
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    // 右侧悬浮暖白胶囊 A-Z 索引条（支持点击与上下滑动快速定位）
+                    if (sectionLetters.isNotEmpty()) {
+                        Column(
+                            modifier = Modifier
+                                .align(Alignment.CenterEnd)
+                                .padding(end = 5.dp)
+                                .chhersShadow(
+                                    cornerRadius = 14.dp,
+                                    floating = false,
+                                    tint = p.shadowTint
+                                )
+                                .clip(RoundedCornerShape(AppRadii.full))
+                                .background(p.cardBg.copy(alpha = 0.94f))
+                                .border(0.6.dp, p.border, RoundedCornerShape(AppRadii.full))
+                                .padding(vertical = 6.dp, horizontal = 2.dp)
+                                .width(22.dp)
+                                .onSizeChanged { indexBarHeightPx = it.height.coerceAtLeast(1) }
+                                .pointerInput(sectionLetters, allItemOffset) {
+                                    awaitEachGesture {
+                                        val down = awaitFirstDown(requireUnconsumed = false)
+                                        fun jumpToY(y: Float) {
+                                            val idx = ((y / indexBarHeightPx.toFloat()) * sectionLetters.size)
+                                                .toInt()
+                                                .coerceIn(0, sectionLetters.lastIndex)
+                                            val letter = sectionLetters[idx]
+                                            if (activeScrubLetter != letter) {
+                                                activeScrubLetter = letter
+                                                scope.launch {
+                                                    listState.scrollToItem(idx + allItemOffset)
+                                                }
+                                            }
+                                        }
+                                        jumpToY(down.position.y)
+                                        do {
+                                            val event = awaitPointerEvent()
+                                            val change = event.changes.firstOrNull() ?: break
+                                            if (change.pressed) {
+                                                jumpToY(change.position.y)
+                                                change.consume()
+                                            }
+                                        } while (event.changes.any { it.pressed })
+                                        activeScrubLetter = null
+                                    }
+                                },
+                            horizontalAlignment = Alignment.CenterHorizontally,
+                            verticalArrangement = Arrangement.spacedBy(1.dp)
+                        ) {
+                            val highlightLetter = activeScrubLetter ?: currentVisibleLetter
+                            sectionLetters.forEach { letter ->
+                                val isCurrent = letter == highlightLetter
+                                Box(
+                                    modifier = Modifier
+                                        .size(18.dp)
+                                        .clip(CircleShape)
+                                        .background(if (isCurrent) p.primary else Color.Transparent),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Text(
+                                        text = letter.toString(),
+                                        fontSize = 10.sp,
+                                        lineHeight = 12.sp,
+                                        fontWeight = if (isCurrent) FontWeight.Bold else FontWeight.Medium,
+                                        color = if (isCurrent) Color.White else p.textSecondary
+                                    )
+                                }
+                            }
+                        }
+                    }
+
+                    // 滑动索引条时的居中放大字母提示气泡
+                    activeScrubLetter?.let { letter ->
+                        Box(
+                            modifier = Modifier
+                                .align(Alignment.Center)
+                                .size(64.dp)
+                                .chhersShadow(
+                                    cornerRadius = 18.dp,
+                                    floating = true,
+                                    tint = p.shadowTint
+                                )
+                                .clip(RoundedCornerShape(18.dp))
+                                .background(p.primary),
+                            contentAlignment = Alignment.Center
+                        ) {
+                            Text(
+                                text = letter.toString(),
+                                fontSize = 28.sp,
+                                fontWeight = FontWeight.Bold,
+                                color = Color.White
+                            )
+                        }
+                    }
+                }
+            }
         }
-    )
+    }
 }
 
 @OptIn(ExperimentalLayoutApi::class)

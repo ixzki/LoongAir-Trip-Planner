@@ -55,6 +55,7 @@ class LoongAirApi(
 
     private val pendingVerifyIds = ConcurrentHashMap<String, String>()
     private val refreshMutex = Mutex()
+    private val keepaliveMutex = Mutex()
 
     private data class GatewayResponse(
         val httpCode: Int,
@@ -119,8 +120,8 @@ class LoongAirApi(
                 .post(body)
 
             if (cleanToken.isNotEmpty()) {
+                // APP 通道 (SaleChannel=8) 仅以 Cookie: SESSION=... 鉴权，不附带冗余 Authorization 头
                 reqBuilder.header("Cookie", "SESSION=$cleanToken")
-                reqBuilder.header("Authorization", cleanToken)
             }
 
             val parsed = httpClient.newCall(reqBuilder.build()).execute().use { resp ->
@@ -191,6 +192,12 @@ class LoongAirApi(
             }
             throw IllegalStateException(baseMsg)
         }
+        // 回写服务端滚动下发的新 SESSION Cookie 并更新最近活跃时间，防止旧凭证过期
+        authPrefs.touchSessionActivity(
+            usedToken = usedToken,
+            rotatedSession = resp.setCookieSession,
+            updatedAt = nowFormatted()
+        )
         return resp.resultElement ?: buildJsonObject { }
     }
 
@@ -642,7 +649,13 @@ class LoongAirApi(
             }
         }
 
-        val cardReport = discoverUnionCards(sessionToken)
+        val effectiveToken = detailResp.setCookieSession
+            ?.removePrefix("SESSION=")
+            ?.trim()
+            ?.takeIf { it.length > 8 }
+            ?: sessionToken
+
+        val cardReport = discoverUnionCards(effectiveToken)
         if (userName == "长龙会员" && cardReport.psgNameFallback.isNotBlank()) {
             userName = cardReport.psgNameFallback
         }
@@ -653,7 +666,7 @@ class LoongAirApi(
         }
 
         authPrefs.saveSession(
-            token = sessionToken,
+            token = effectiveToken,
             refreshToken = refreshToken,
             userName = userName,
             mobile = mobile,
@@ -680,6 +693,55 @@ class LoongAirApi(
             detectedCardsCount = cardReport.cards.size,
             message = "欢迎回来，$userName！已绑定 $cardName$scgHint"
         )
+    }
+
+    /**
+     * 轻量级会话保活：向长龙网关发送 sales_user_userDetailInfo 心跳，
+     * 刷新服务端滑动 TTL 并回写新 Set-Cookie；遇到 403/100001 自动尝试 refreshToken 静默续期。
+     * 网络波动或风控限流时返回 TransientError，绝不误判为登录失效。
+     */
+    suspend fun keepaliveSession(force: Boolean = false): KeepaliveResult = keepaliveMutex.withLock {
+        val s = authPrefs.current()
+        if (!s.isLoggedIn || s.sessionToken.isBlank()) {
+            return@withLock KeepaliveResult.NotLoggedIn
+        }
+        val now = System.currentTimeMillis()
+        if (!force && s.lastKeepaliveAtMillis > 0L && (now - s.lastKeepaliveAtMillis) < KEEPALIVE_MIN_INTERVAL_MS) {
+            return@withLock KeepaliveResult.SkippedFresh
+        }
+        val usedToken = s.sessionToken
+        val params = buildJsonObject {
+            put("SaleChannel", 8)
+            put("saleChannel", 8)
+            put("language", "zh-cn")
+        }
+        val resp = try {
+            callGateway("sales_user_userDetailInfo", params, usedToken)
+        } catch (c: CancellationException) {
+            throw c
+        } catch (e: Exception) {
+            return@withLock KeepaliveResult.TransientError(e.message ?: "network_error")
+        }
+
+        if (resp.errorCode == 0) {
+            val rotated = authPrefs.touchSessionActivity(
+                usedToken = usedToken,
+                rotatedSession = resp.setCookieSession,
+                updatedAt = nowFormatted(),
+                nowMillis = System.currentTimeMillis()
+            )
+            return@withLock KeepaliveResult.Alive(tokenRotated = rotated)
+        }
+
+        if (resp.httpCode == 403 || resp.errorCode == 100001) {
+            return@withLock if (tryRefreshSession(failedToken = usedToken)) {
+                KeepaliveResult.Refreshed
+            } else {
+                KeepaliveResult.Expired
+            }
+        }
+
+        KeepaliveResult.TransientError("errorCode=${resp.errorCode}")
     }
 
     suspend fun tryRefreshSession(failedToken: String? = null): Boolean = refreshMutex.withLock {
@@ -1069,6 +1131,7 @@ class LoongAirApi(
 
     companion object {
         private const val GATEWAY_URL = "https://www.loongair.cn/webhandler.ashx"
+        private const val KEEPALIVE_MIN_INTERVAL_MS = 15L * 60L * 1000L
         private const val APP_USER_AGENT =
             "Mozilla/5.0 (iPhone; CPU iPhone OS 18_7 like Mac OS X) " +
                 "AppleWebKit/605.1.15 (KHTML, like Gecko) Mobile/15E148 " +

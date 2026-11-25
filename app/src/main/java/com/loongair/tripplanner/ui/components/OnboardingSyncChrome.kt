@@ -60,6 +60,8 @@ import androidx.compose.ui.unit.sp
 import com.loongair.tripplanner.data.local.OfficialAirportEntity
 import com.loongair.tripplanner.data.local.UserSessionState
 import com.loongair.tripplanner.data.remote.CityIataMapper
+import com.loongair.tripplanner.data.remote.CityMeta
+import com.loongair.tripplanner.ui.search.CityPickerDialog
 import com.loongair.tripplanner.ui.theme.AppPressScale
 import com.loongair.tripplanner.ui.theme.AppRadii
 import com.loongair.tripplanner.ui.theme.AppSpace
@@ -487,74 +489,28 @@ fun FirstCitySyncPanel(
     }
 
     if (showFullDirectoryDialog) {
-        var dirQuery by remember { mutableStateOf("") }
-        val dirList = remember(officialAirports, dirQuery) {
-            val q = dirQuery.trim()
-            if (q.isBlank()) officialAirports
-            else officialAirports.filter {
-                it.cityName.contains(q, ignoreCase = true) ||
-                    it.airportCode.contains(q, ignoreCase = true) ||
-                    it.pinyin.contains(q, ignoreCase = true)
+        val dirCities = remember(officialAirports) { officialAirports.map { it.cityName }.distinct() }
+        val dirMetaMap = remember(officialAirports) {
+            officialAirports.associate { ap ->
+                ap.cityName to CityMeta(
+                    city = ap.cityName,
+                    code = ap.airportCode,
+                    airport = ap.airportName,
+                    pinyin = ap.pinyin
+                )
             }
         }
-        AlertDialog(
-            onDismissRequest = { showFullDirectoryDialog = false },
-            containerColor = p.cardBg,
-            title = { Text("选择出发城市 (${officialAirports.size})", style = LoongType.headline, color = p.textPrimary) },
-            text = {
-                Column(verticalArrangement = Arrangement.spacedBy(10.dp)) {
-                    OutlinedTextField(
-                        value = dirQuery,
-                        onValueChange = { dirQuery = it },
-                        placeholder = { Text("按中文、拼音或三字码筛选") },
-                        singleLine = true,
-                        shape = RoundedCornerShape(14.dp),
-                        modifier = Modifier.fillMaxWidth()
-                    )
-                    LazyColumn(
-                        modifier = Modifier
-                            .fillMaxWidth()
-                            .height(300.dp),
-                        verticalArrangement = Arrangement.spacedBy(4.dp)
-                    ) {
-                        items(dirList.size, key = { dirList[it].airportCode + "_" + dirList[it].cityName }) { idx ->
-                            val ap = dirList[idx]
-                            Row(
-                                modifier = Modifier
-                                    .fillMaxWidth()
-                                    .clip(RoundedCornerShape(12.dp))
-                                    .background(p.subtleSurface)
-                                    .pressScale(
-                                        scaleDown = AppPressScale.CONTENT,
-                                        haptic = true,
-                                        onClick = {
-                                            cityInput = ap.cityName
-                                            showFullDirectoryDialog = false
-                                        }
-                                    )
-                                    .padding(horizontal = 12.dp, vertical = 10.dp),
-                                horizontalArrangement = Arrangement.SpaceBetween,
-                                verticalAlignment = Alignment.CenterVertically
-                            ) {
-                                Column {
-                                    Text(ap.cityName, style = LoongType.filter, color = p.textPrimary)
-                                    if (ap.airportName.isNotBlank()) {
-                                        Text(ap.airportName, style = LoongType.caption.copy(fontWeight = FontWeight.Normal), color = p.textTertiary)
-                                    }
-                                }
-                                Text(
-                                    ap.airportCode,
-                                    style = LoongType.footnoteStrong.copy(fontFeatureSettings = "tnum"),
-                                    color = p.primary
-                                )
-                            }
-                        }
-                    }
+        CityPickerDialog(
+            title = "选择出发城市 (${dirCities.size})",
+            cities = dirCities,
+            cityMetaMap = dirMetaMap,
+            allowAll = false,
+            onDismiss = { showFullDirectoryDialog = false },
+            onSelect = { selected ->
+                if (selected.isNotBlank()) {
+                    cityInput = selected
                 }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showFullDirectoryDialog = false }) { Text("关闭") }
+                showFullDirectoryDialog = false
             }
         )
     }

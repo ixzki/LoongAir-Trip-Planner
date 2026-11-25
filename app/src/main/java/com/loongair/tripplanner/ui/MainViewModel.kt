@@ -13,6 +13,7 @@ import com.loongair.tripplanner.data.local.TripTemplateEntity
 import com.loongair.tripplanner.data.local.UserSessionState
 import com.loongair.tripplanner.data.remote.LoginResult
 import com.loongair.tripplanner.data.remote.RouteInvalidatedException
+import com.loongair.tripplanner.data.remote.SessionKeepaliveScheduler
 import com.loongair.tripplanner.data.repository.FlightCandidate
 import com.loongair.tripplanner.data.repository.NetworkRouteSummary
 import com.loongair.tripplanner.data.repository.RoundTripCandidate
@@ -87,6 +88,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private var officialSyncJob: Job? = null
     private var calibrateJob: Job? = null
     private var searchJob: Job? = null
+    private var keepaliveJob: Job? = null
 
     init {
         viewModelScope.launch {
@@ -923,6 +925,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun loginBySmsCode(mobile: String, code: String, verifyId: String): LoginResult {
         val res = repo.api.loginBySmsCode(mobile, code, verifyId)
         if (res.ok) {
+            SessionKeepaliveScheduler.sync(app, isLoggedIn = true)
             refreshOfficialDepartureAirports(silent = true)
         }
         return res
@@ -931,9 +934,23 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     suspend fun importManualCredentials(sessionToken: String, scgTid: String): LoginResult {
         val res = repo.api.importManualCredentials(sessionToken, scgTid)
         if (res.ok) {
+            SessionKeepaliveScheduler.sync(app, isLoggedIn = true)
             refreshOfficialDepartureAirports(silent = true)
         }
         return res
+    }
+
+    /**
+     * 前台恢复时静默触发会话保活（内部带 15 分钟节流与并发锁，成功或偶发网络波动均不打扰用户）。
+     */
+    fun keepaliveSessionIfNeeded() {
+        if (!sessionState.value.isLoggedIn) return
+        if (keepaliveJob?.isActive == true) return
+        keepaliveJob = viewModelScope.launch {
+            suspendRunCatching {
+                repo.api.keepaliveSession(force = false)
+            }
+        }
     }
 
     fun refreshOfficialDepartureAirports(silent: Boolean = false) {
@@ -1304,6 +1321,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun logout() {
         cancelAllBackgroundJobs()
+        keepaliveJob?.cancel()
+        keepaliveJob = null
+        SessionKeepaliveScheduler.cancel(app)
         repo.authPrefs.clearSession()
         _searchState.update { it.copy(officialAllowedDestinations = null) }
         showMessage("已退出登录并清空本地会话凭据")

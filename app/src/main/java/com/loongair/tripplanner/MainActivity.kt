@@ -5,14 +5,20 @@ import android.graphics.Color as AndroidColor
 import android.os.Bundle
 import androidx.activity.ComponentActivity
 import androidx.activity.SystemBarStyle
+import androidx.activity.compose.BackHandler
 import androidx.activity.compose.setContent
 import androidx.activity.enableEdgeToEdge
 import androidx.activity.viewModels
+import androidx.compose.animation.AnimatedVisibility
 import androidx.compose.animation.Crossfade
 import androidx.compose.animation.animateColorAsState
 import androidx.compose.animation.core.Animatable
 import androidx.compose.animation.core.animateFloatAsState
 import androidx.compose.animation.core.tween
+import androidx.compose.animation.fadeIn
+import androidx.compose.animation.fadeOut
+import androidx.compose.animation.slideInHorizontally
+import androidx.compose.animation.slideOutHorizontally
 import androidx.compose.foundation.BorderStroke
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.Arrangement
@@ -45,6 +51,7 @@ import androidx.compose.material3.SnackbarHostState
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.CompositionLocalProvider
 import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
@@ -72,6 +79,10 @@ import com.loongair.tripplanner.ui.components.FullScreenLaunchSplash
 import com.loongair.tripplanner.ui.components.chhersShadow
 import com.loongair.tripplanner.ui.plans.PlansScreen
 import com.loongair.tripplanner.ui.routes.RoutesScreen
+import com.loongair.tripplanner.ui.search.CityPickerController
+import com.loongair.tripplanner.ui.search.CityPickerFullScreenContent
+import com.loongair.tripplanner.ui.search.CityPickerRequest
+import com.loongair.tripplanner.ui.search.LocalCityPickerController
 import com.loongair.tripplanner.ui.search.SearchScreen
 import com.loongair.tripplanner.ui.theme.AppMotion
 import com.loongair.tripplanner.ui.theme.AppPressScale
@@ -102,27 +113,77 @@ class MainActivity : ComponentActivity() {
 
             LoongAirTheme(themeStyle = themeStyle) {
                 val palette = LocalLoongPalette.current
+                val cityPickerController = remember { CityPickerController() }
+                val activeCityPicker = cityPickerController.activeRequest
+                var displayedCityPicker by remember { mutableStateOf<CityPickerRequest?>(null) }
+                if (activeCityPicker != null) {
+                    displayedCityPicker = activeCityPicker
+                }
+                val pickerParallax by animateFloatAsState(
+                    targetValue = if (activeCityPicker != null) 1f else 0f,
+                    animationSpec = AppMotion.reveal(),
+                    label = "cityPickerParallax"
+                )
+
                 SideEffect {
                     val controller = WindowCompat.getInsetsController(window, window.decorView)
                     val isCrimsonSplash = showSplash && themeStyle == AppThemeStyle.CRIMSON
-                    controller.isAppearanceLightStatusBars = if (isCrimsonSplash) false else palette.lightStatusBarIcons
+                    val isLightStatus = when {
+                        isCrimsonSplash -> false
+                        activeCityPicker != null -> true
+                        else -> palette.lightStatusBarIcons
+                    }
+                    controller.isAppearanceLightStatusBars = isLightStatus
                     controller.isAppearanceLightNavigationBars = !isCrimsonSplash
                 }
-                Box(modifier = Modifier.fillMaxSize()) {
-                    MainScaffold(
-                        viewModel = viewModel,
-                        selectedTab = selectedTabState.intValue,
-                        onSelectTab = { selectedTabState.intValue = it }
-                    )
-                    if (showSplash) {
-                        FullScreenLaunchSplash(
-                            isDataReady = !networkState.isLoading,
-                            onDismissed = { showSplash = false }
-                        )
+
+                BackHandler(enabled = activeCityPicker != null) {
+                    activeCityPicker?.onDismiss?.invoke()
+                }
+
+                CompositionLocalProvider(LocalCityPickerController provides cityPickerController) {
+                    Box(modifier = Modifier.fillMaxSize()) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxSize()
+                                .graphicsLayer {
+                                    translationX = -size.width * 0.25f * pickerParallax
+                                }
+                        ) {
+                            MainScaffold(
+                                viewModel = viewModel,
+                                selectedTab = selectedTabState.intValue,
+                                onSelectTab = { selectedTabState.intValue = it }
+                            )
+                        }
+
+                        // 与「卡片」「设置」「畅飞航网管理」完全一致的水平推入/弹出转场动画
+                        AnimatedVisibility(
+                            visible = activeCityPicker != null,
+                            enter = slideInHorizontally(AppMotion.revealOffset()) { it } + fadeIn(AppMotion.fade(180)),
+                            exit = slideOutHorizontally(AppMotion.revealOffset()) { it } + fadeOut(AppMotion.fade(180))
+                        ) {
+                            val req = activeCityPicker ?: displayedCityPicker
+                            if (req != null) {
+                                CityPickerFullScreenContent(request = req)
+                            }
+                        }
+
+                        if (showSplash) {
+                            FullScreenLaunchSplash(
+                                isDataReady = !networkState.isLoading,
+                                onDismissed = { showSplash = false }
+                            )
+                        }
                     }
                 }
             }
         }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        viewModel.keepaliveSessionIfNeeded()
     }
 
     override fun onNewIntent(intent: Intent) {

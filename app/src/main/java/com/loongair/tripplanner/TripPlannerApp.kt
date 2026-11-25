@@ -6,6 +6,7 @@ import com.loongair.tripplanner.alarm.ReminderScheduler
 import com.loongair.tripplanner.data.local.AppDatabase
 import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.remote.LoongAirApi
+import com.loongair.tripplanner.data.remote.SessionKeepaliveScheduler
 import com.loongair.tripplanner.data.repository.FlightRepository
 
 class TripPlannerApp : Application() {
@@ -28,5 +29,6 @@ class TripPlannerApp : Application() {
         api = LoongAirApi(authPrefs)
         repository = FlightRepository(this, database, authPrefs, api)
         reminderScheduler = ReminderScheduler(this)
+        SessionKeepaliveScheduler.sync(this, authPrefs.current().isLoggedIn)
     }
 }

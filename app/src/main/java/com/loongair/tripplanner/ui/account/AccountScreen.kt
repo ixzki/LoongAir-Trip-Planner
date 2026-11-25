@@ -142,6 +142,7 @@ import kotlinx.coroutines.launch
 private enum class ProfileSubPage(val depth: Int) {
     MAIN(0),
     CARDS(1),
+    NETWORK(1),
     SETTINGS(1),
     ABOUT(2)
 }
@@ -171,7 +172,6 @@ fun AccountScreen(viewModel: MainViewModel) {
     var showYidunDialog by remember { mutableStateOf(false) }
 
     var showManualDialog by remember { mutableStateOf(false) }
-    var showOfficialDestsDialog by remember { mutableStateOf(false) }
     var showHomeCityPicker by remember { mutableStateOf(false) }
     var showSyncOtherCityDialog by remember { mutableStateOf(false) }
     var showDiagnosticDialog by remember { mutableStateOf(false) }
@@ -214,6 +214,37 @@ fun AccountScreen(viewModel: MainViewModel) {
                     onSelectCard = { tid, name -> viewModel.selectActiveCard(tid, name) },
                     onOpenDiagnostic = { showDiagnosticDialog = true },
                     onOpenManual = { showManualDialog = true }
+                )
+            }
+
+            ProfileSubPage.NETWORK -> {
+                val activeHome = session.homeCity.ifBlank { searchState.originCity.ifBlank { "杭州" } }
+                val soldOutRoutes = remember(networkState.allRoutes) {
+                    networkState.allRoutes.filter { it.availableDaysCount == 0 && it.soldOutDaysCount > 0 }
+                }
+                NetworkManageSubPage(
+                    activeHomeCity = activeHome,
+                    isLoggedIn = session.isLoggedIn,
+                    officialSyncing = networkState.officialSyncing,
+                    officialSyncedCount = networkState.officialSyncedCount,
+                    bundledRouteCount = networkState.bundledRouteCount,
+                    homeDestinations = searchState.officialAllowedDestinations.orEmpty(),
+                    soldOutRoutes = soldOutRoutes,
+                    invalidatedRoutes = networkState.invalidatedRoutes,
+                    onBack = { subPage = ProfileSubPage.MAIN },
+                    onRefreshHomeCity = { viewModel.checkOfficialDestinationsForHome() },
+                    onSelectDestination = { city ->
+                        viewModel.setDestinationFilter(city)
+                        viewModel.showMessage("已将往返搜索目标设为「$city」")
+                        subPage = ProfileSubPage.MAIN
+                    },
+                    onRefreshAllSoldOut = {
+                        viewModel.refreshAllSoldOutRoutes()
+                        subPage = ProfileSubPage.MAIN
+                    },
+                    onRestoreInvalidated = { from, to ->
+                        viewModel.restoreInvalidatedRouteAndRecheck(from, to)
+                    }
                 )
             }
 
@@ -278,7 +309,7 @@ fun AccountScreen(viewModel: MainViewModel) {
                         else viewModel.syncOfficialNetworkHubs()
                     },
                     onOpenSyncOtherCity = { showSyncOtherCityDialog = true },
-                    onOpenOfficialDests = { showOfficialDestsDialog = true },
+                    onOpenOfficialDests = { subPage = ProfileSubPage.NETWORK },
                     onOpenSettings = { subPage = ProfileSubPage.SETTINGS }
                 )
             }
@@ -320,232 +351,74 @@ fun AccountScreen(viewModel: MainViewModel) {
     }
 
     if (showSyncOtherCityDialog) {
-        AlertDialog(
-            onDismissRequest = { showSyncOtherCityDialog = false },
-            containerColor = p.cardBg,
-            title = { Text("同步其他城市全部航线", style = LoongType.headline, color = p.textPrimary) },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(8.dp)
-                ) {
-                    Text(
-                        "输入或选择任意出发城市，将自动同步该城市全部官方可达目的地、去返班次时刻与放票日历。",
-                        style = LoongType.footnote,
-                        color = p.textSecondary
-                    )
-                    FirstCitySyncPanel(
-                        officialAirports = officialAirports,
-                        departureAirportsLoading = departureAirportsLoading,
-                        officialSyncing = networkState.officialSyncing,
-                        syncDoneCount = networkState.syncDoneCount,
-                        syncTotalCount = networkState.syncTotalCount,
-                        officialSyncProgress = networkState.officialSyncProgress,
-                        onRefreshAirports = { viewModel.refreshOfficialDepartureAirports(silent = false) },
-                        onSyncCityAllRoutes = { city ->
-                            viewModel.syncSingleCityAllRoutes(city)
-                            showSyncOtherCityDialog = false
-                        },
-                        onStopSync = { viewModel.stopOfficialNetworkSync() }
-                    )
-                }
-            },
-            confirmButton = {},
-            dismissButton = {
-                TextButton(onClick = { showSyncOtherCityDialog = false }) { Text("关闭") }
-            }
-        )
-    }
-
-    if (showOfficialDestsDialog) {
-        val activeHome = session.homeCity.ifBlank { searchState.originCity.ifBlank { "杭州" } }
-        val dests = searchState.officialAllowedDestinations.orEmpty()
-        val soldOutRoutes = remember(networkState.allRoutes) {
-            networkState.allRoutes.filter { it.availableDaysCount == 0 && it.soldOutDaysCount > 0 }
+        val syncCities = remember(officialAirports, searchState.allOriginCities) {
+            (officialAirports.map { it.cityName } + searchState.allOriginCities).distinct()
         }
-        val invalidatedList = networkState.invalidatedRoutes
-        val liveVerifiedCnt = (networkState.officialSyncedCount - networkState.bundledRouteCount).coerceAtLeast(0)
-        var selectedTab by remember { mutableIntStateOf(0) } // 0=常驻可达, 1=已约满(卡内有效), 2=已移出/停航
-
-        AlertDialog(
-            onDismissRequest = { showOfficialDestsDialog = false },
-            containerColor = p.cardBg,
-            title = { Text("畅飞航网管理", style = LoongType.headline, color = p.textPrimary) },
-            text = {
-                Column(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .height(360.dp)
-                        .verticalScroll(rememberScrollState()),
-                    verticalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    Surface(color = p.subtleSurface, shape = RoundedCornerShape(12.dp)) {
-                        Text(
-                            text = "有效航线 ${networkState.officialSyncedCount} 条（实时校验 $liveVerifiedCnt · 内置基准 ${networkState.bundledRouteCount}）\n" +
-                                "卡内已约满 ${soldOutRoutes.size} 条 · 已移出/停航剔除 ${invalidatedList.size} 条",
-                            style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-                            color = p.textSecondary,
-                            modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
-                        )
-                    }
-                    Row(
-                        modifier = Modifier.fillMaxWidth(),
-                        horizontalArrangement = Arrangement.spacedBy(6.dp)
-                    ) {
-                        FilterChip(
-                            selected = selectedTab == 0,
-                            onClick = { selectedTab = 0 },
-                            label = { Text("$activeHome(${dests.size})", style = LoongType.caption) }
-                        )
-                        FilterChip(
-                            selected = selectedTab == 1,
-                            onClick = { selectedTab = 1 },
-                            label = { Text("全约满(${soldOutRoutes.size})", style = LoongType.caption) }
-                        )
-                        FilterChip(
-                            selected = selectedTab == 2,
-                            onClick = { selectedTab = 2 },
-                            label = { Text("已移出(${invalidatedList.size})", style = LoongType.caption) }
-                        )
-                    }
-                    when (selectedTab) {
-                        0 -> {
-                            if (dests.isEmpty()) {
-                                Text(
-                                    "尚未同步「$activeHome」航线，请点击下方按钮重新拉取。",
-                                    style = LoongType.footnote,
-                                    color = p.textSecondary
-                                )
-                            } else {
-                                FlowRow(
-                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                    verticalArrangement = Arrangement.spacedBy(4.dp)
-                                ) {
-                                    dests.forEach { city ->
-                                        AssistChip(
-                                            onClick = {
-                                                viewModel.setDestinationFilter(city)
-                                                viewModel.showMessage("已将往返搜索目标设为「$city」")
-                                                showOfficialDestsDialog = false
-                                            },
-                                            label = { Text(city, style = LoongType.caption) }
-                                        )
-                                    }
-                                }
-                            }
-                        }
-
-                        1 -> {
-                            Text(
-                                "以下航线仍在畅飞卡适用范围内，只是近期已放票日期名额全部约满（非移出卡外）；可在每日 10:00 开抢新窗或临近出行前点击下方按钮巡检退票回流。",
-                                style = LoongType.caption,
-                                color = p.textSecondary
+        val syncMetaMap = remember(officialAirports, searchState.cityMetaList) {
+            buildMap {
+                searchState.cityMetaList.forEach { put(it.city, it) }
+                officialAirports.forEach { ap ->
+                    if (!containsKey(ap.cityName)) {
+                        put(
+                            ap.cityName,
+                            com.loongair.tripplanner.data.remote.CityMeta(
+                                city = ap.cityName,
+                                code = ap.airportCode,
+                                airport = ap.airportName,
+                                pinyin = ap.pinyin
                             )
-                            if (soldOutRoutes.isNotEmpty() && session.isLoggedIn) {
-                                OutlinedButton(
-                                    enabled = !networkState.officialSyncing,
-                                    shape = RoundedCornerShape(12.dp),
-                                    onClick = {
-                                        viewModel.refreshAllSoldOutRoutes()
-                                        showOfficialDestsDialog = false
-                                    },
-                                    modifier = Modifier.fillMaxWidth()
-                                ) {
-                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
-                                    Spacer(Modifier.width(6.dp))
-                                    Text("一键巡检全部约满航线余票", style = LoongType.footnoteStrong)
-                                }
-                            }
-                            if (soldOutRoutes.isEmpty()) {
-                                Text("当前全网暂无近期全部约满的航线。", style = LoongType.footnote, color = p.textSecondary)
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    soldOutRoutes.forEach { r ->
-                                        Surface(color = p.warningBg, shape = RoundedCornerShape(10.dp)) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        "${r.fromCity} → ${r.toCity}",
-                                                        style = LoongType.footnoteStrong,
-                                                        color = p.textPrimary
-                                                    )
-                                                    Text(
-                                                        if (r.flights.isNotEmpty()) {
-                                                            "已有时刻 ${r.flights.size} 班 · 近${r.soldOutDaysCount}天约满"
-                                                        } else {
-                                                            "近${r.soldOutDaysCount}个放票日约满（有余票即自动抓取时刻）"
-                                                        },
-                                                        style = LoongType.caption,
-                                                        color = p.warning
-                                                    )
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
-
-                        else -> {
-                            Text(
-                                "以下航线经官方接口确认已下线、停航无班或超出当前畅飞卡适用范围，已从本地与内置基准库自动剔除。",
-                                style = LoongType.caption,
-                                color = p.textSecondary
-                            )
-                            if (invalidatedList.isEmpty()) {
-                                Text("当前暂未检测到被移出或停航失效的航线。", style = LoongType.footnote, color = p.textSecondary)
-                            } else {
-                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
-                                    invalidatedList.forEach { inv ->
-                                        Surface(color = p.dangerBg, shape = RoundedCornerShape(10.dp)) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .fillMaxWidth()
-                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
-                                                horizontalArrangement = Arrangement.SpaceBetween,
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Column(modifier = Modifier.weight(1f)) {
-                                                    Text(
-                                                        "${inv.fromCity} → ${inv.toCity}",
-                                                        style = LoongType.footnoteStrong,
-                                                        color = p.textPrimary
-                                                    )
-                                                    Text(
-                                                        inv.reason,
-                                                        style = LoongType.caption,
-                                                        color = p.danger
-                                                    )
-                                                }
-                                                TextButton(
-                                                    onClick = {
-                                                        viewModel.restoreInvalidatedRouteAndRecheck(inv.fromCity, inv.toCity)
-                                                    }
-                                                ) {
-                                                    Text("重检", style = LoongType.caption)
-                                                }
-                                            }
-                                        }
-                                    }
-                                }
-                            }
-                        }
+                        )
                     }
                 }
+            }
+        }
+        CityPickerDialog(
+            title = "同步其他城市航线",
+            subtitle = "选择任意出发城市，立即同步该城全部官方航线、时刻与放票日历",
+            cities = syncCities,
+            cityMetaMap = syncMetaMap,
+            allowAll = false,
+            trailingAction = {
+                Row(
+                    modifier = Modifier
+                        .clip(RoundedCornerShape(AppRadii.full))
+                        .background(p.primarySoftBg)
+                        .pressScale(
+                            scaleDown = AppPressScale.CONTROL,
+                            haptic = true,
+                            onClick = { viewModel.refreshOfficialDepartureAirports(silent = false) }
+                        )
+                        .padding(horizontal = 12.dp, vertical = 7.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    if (departureAirportsLoading) {
+                        CircularProgressIndicator(
+                            modifier = Modifier.size(13.dp),
+                            strokeWidth = 1.8.dp,
+                            color = p.primary
+                        )
+                    } else {
+                        Icon(
+                            imageVector = Icons.Default.Refresh,
+                            contentDescription = null,
+                            tint = p.primary,
+                            modifier = Modifier.size(14.dp)
+                        )
+                    }
+                    Text(
+                        text = if (departureAirportsLoading) "刷新中" else "刷新目录",
+                        style = LoongType.caption.copy(fontWeight = FontWeight.SemiBold),
+                        color = p.primary
+                    )
+                }
             },
-            confirmButton = {
-                TextButton(onClick = { viewModel.checkOfficialDestinationsForHome() }) { Text("刷新常驻城", style = LoongType.filter) }
-            },
-            dismissButton = {
-                TextButton(onClick = { showOfficialDestsDialog = false }) { Text("关闭") }
+            onDismiss = { showSyncOtherCityDialog = false },
+            onSelect = { city ->
+                if (city.isNotBlank()) {
+                    viewModel.syncSingleCityAllRoutes(city)
+                }
+                showSyncOtherCityDialog = false
             }
         )
     }
@@ -748,6 +621,7 @@ private fun ProfileMainPage(
                     syncDoneCount = syncDoneCount,
                     syncTotalCount = syncTotalCount,
                     officialSyncProgress = officialSyncProgress,
+                    onOpenCards = onOpenCards,
                     onOpenHomeCityPicker = onOpenHomeCityPicker,
                     onSyncHomeRoutes = onSyncHomeRoutes,
                     onToggleNetworkSync = onToggleNetworkSync
@@ -794,98 +668,47 @@ private fun ProfileMainPage(
                             modifier = Modifier
                                 .fillMaxWidth()
                                 .statusBarsPadding()
-                                .padding(top = 14.dp, bottom = 2.dp),
+                                .padding(top = 18.dp, bottom = 2.dp),
                             verticalArrangement = Arrangement.spacedBy(16.dp)
                         ) {
-                            Text(
-                                text = "我的",
-                                style = LoongType.largeTitle,
-                                color = p.textPrimary,
-                                modifier = Modifier.padding(horizontal = AppSpace.screen)
-                            )
-                            // 薄暮独立白纸身份卡（复刻 me_page.dart _MistyIdentity）
+                            // 薄暮独立白纸身份卡（居中排布，无头像框）
                             Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
-                                SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
-                                    Row(
+                                SoftCard(cornerRadius = AppRadii.card, contentPadding = 18.dp) {
+                                    Column(
                                         modifier = Modifier.fillMaxWidth(),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.SpaceBetween
+                                        horizontalAlignment = Alignment.CenterHorizontally,
+                                        verticalArrangement = Arrangement.spacedBy(6.dp)
                                     ) {
+                                        Text(
+                                            text = if (session.isLoggedIn) session.userName else "未登录账号",
+                                            style = LoongType.title2.copy(fontSize = 21.sp),
+                                            color = p.textPrimary,
+                                            textAlign = TextAlign.Center,
+                                            maxLines = 1,
+                                            overflow = TextOverflow.Ellipsis
+                                        )
                                         Row(
-                                            verticalAlignment = Alignment.CenterVertically,
-                                            horizontalArrangement = Arrangement.spacedBy(13.dp),
-                                            modifier = Modifier.weight(1f)
+                                            horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                            verticalAlignment = Alignment.CenterVertically
                                         ) {
-                                            Box(
-                                                modifier = Modifier
-                                                    .size(56.dp)
-                                                    .clip(CircleShape)
-                                                    .background(p.primarySoftBg),
-                                                contentAlignment = Alignment.Center
-                                            ) {
-                                                if (session.isLoggedIn && session.userName.isNotBlank()) {
-                                                    Text(
-                                                        text = session.userName.take(1),
-                                                        style = LoongType.title2.copy(fontSize = 22.sp),
-                                                        color = p.primary
-                                                    )
-                                                } else {
-                                                    Icon(
-                                                        Icons.Default.Flight,
-                                                        contentDescription = null,
-                                                        tint = p.primary,
-                                                        modifier = Modifier.size(26.dp)
-                                                    )
-                                                }
-                                            }
-                                            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
-                                                Text(
-                                                    text = if (session.isLoggedIn) session.userName else "未登录账号",
-                                                    style = LoongType.title2.copy(fontSize = 21.sp),
-                                                    color = p.textPrimary,
-                                                    maxLines = 1,
-                                                    overflow = TextOverflow.Ellipsis
-                                                )
-                                                Row(
-                                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
-                                                    verticalAlignment = Alignment.CenterVertically
-                                                ) {
-                                                    Text(
-                                                        text = if (session.isLoggedIn) session.maskedMobile.ifBlank { "已绑定账号" } else "登录后同步专属航网",
-                                                        style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-                                                        color = p.textTertiary
-                                                    )
-                                                    if (session.isLoggedIn) {
-                                                        TonePillBadge(
-                                                            text = session.memberLevel,
-                                                            backgroundColor = p.primarySoftBg,
-                                                            contentColor = p.primary,
-                                                            cornerRadius = 8.dp
-                                                        )
-                                                    }
-                                                }
-                                            }
-                                        }
-                                        if (session.isLoggedIn) {
-                                            Row(
-                                                modifier = Modifier
-                                                    .pressScale(scaleDown = AppPressScale.CONTROL, haptic = true, onClick = onOpenCards)
-                                                    .padding(horizontal = 6.dp, vertical = 6.dp),
-                                                verticalAlignment = Alignment.CenterVertically
-                                            ) {
-                                                Text("卡片", style = LoongType.footnoteStrong, color = p.textSecondary)
-                                                Icon(
-                                                    Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                                    contentDescription = null,
-                                                    tint = p.textTertiary,
-                                                    modifier = Modifier.size(16.dp)
+                                            Text(
+                                                text = if (session.isLoggedIn) session.maskedMobile.ifBlank { "已绑定账号" } else "登录后同步专属航网",
+                                                style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+                                                color = p.textTertiary
+                                            )
+                                            if (session.isLoggedIn) {
+                                                TonePillBadge(
+                                                    text = session.memberLevel,
+                                                    backgroundColor = p.primarySoftBg,
+                                                    contentColor = p.primary,
+                                                    cornerRadius = 8.dp
                                                 )
                                             }
                                         }
                                     }
                                 }
                             }
-                            // 顶部主悬浮卡（未登录=直登卡；已登录未同步=优先同步单城卡；已就绪=三入口条）
+                            // 顶部主悬浮卡（未登录=直登卡；已登录未同步=优先同步单城卡；已就绪=四入口条）
                             Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                                 topFloatingCard()
                             }
@@ -896,99 +719,44 @@ private fun ProfileMainPage(
                 item {
                     HeroHeaderOverlapContainer(
                         subtitle = "",
-                        title = "我的",
+                        title = "",
                         watermark = "MINE",
                         collapseProgress = collapseProgress,
                         heroExtraContent = {
-                            Row(
+                            Column(
                                 modifier = Modifier.fillMaxWidth(),
-                                verticalAlignment = Alignment.CenterVertically,
-                                horizontalArrangement = Arrangement.SpaceBetween
+                                horizontalAlignment = Alignment.CenterHorizontally,
+                                verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
+                                Text(
+                                    text = if (session.isLoggedIn) session.userName else "未登录账号",
+                                    style = LoongType.title1,
+                                    color = p.heroText,
+                                    textAlign = TextAlign.Center,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
                                 Row(
-                                    verticalAlignment = Alignment.CenterVertically,
-                                    horizontalArrangement = Arrangement.spacedBy(15.dp),
-                                    modifier = Modifier.weight(1f)
+                                    horizontalArrangement = Arrangement.spacedBy(7.dp),
+                                    verticalAlignment = Alignment.CenterVertically
                                 ) {
-                                    Box(
-                                        modifier = Modifier
-                                            .size(60.dp)
-                                            .clip(CircleShape)
-                                            .background(p.heroChipBg)
-                                            .border(1.5.dp, p.heroText.copy(alpha = 0.25f), CircleShape),
-                                        contentAlignment = Alignment.Center
-                                    ) {
-                                        if (session.isLoggedIn && session.userName.isNotBlank()) {
-                                            Text(
-                                                text = session.userName.take(1),
-                                                style = LoongType.title1.copy(fontSize = 24.sp),
-                                                color = p.heroText
-                                            )
-                                        } else {
-                                            Icon(
-                                                Icons.Default.Flight,
-                                                contentDescription = null,
-                                                tint = p.heroText,
-                                                modifier = Modifier.size(28.dp)
-                                            )
-                                        }
-                                    }
-
-                                    Column(verticalArrangement = Arrangement.spacedBy(5.dp)) {
-                                        Text(
-                                            text = if (session.isLoggedIn) session.userName else "未登录账号",
-                                            style = LoongType.title1,
-                                            color = p.heroText,
-                                            maxLines = 1,
-                                            overflow = TextOverflow.Ellipsis
-                                        )
-                                        Row(
-                                            horizontalArrangement = Arrangement.spacedBy(7.dp),
-                                            verticalAlignment = Alignment.CenterVertically
+                                    Text(
+                                        text = if (session.isLoggedIn) session.maskedMobile.ifBlank { "已绑定账号" } else "登录后同步专属航网",
+                                        style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+                                        color = p.heroSubText
+                                    )
+                                    if (session.isLoggedIn) {
+                                        Surface(
+                                            color = Color.Black.copy(alpha = 0.28f),
+                                            shape = RoundedCornerShape(10.dp)
                                         ) {
                                             Text(
-                                                text = if (session.isLoggedIn) session.maskedMobile.ifBlank { "已绑定账号" } else "登录后同步专属航网",
-                                                style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-                                                color = p.heroSubText
+                                                text = session.memberLevel,
+                                                style = LoongType.caption.copy(fontSize = 11.sp),
+                                                color = p.heroText,
+                                                modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
                                             )
-                                            if (session.isLoggedIn) {
-                                                Surface(
-                                                    color = Color.Black.copy(alpha = 0.28f),
-                                                    shape = RoundedCornerShape(10.dp)
-                                                ) {
-                                                    Text(
-                                                        text = session.memberLevel,
-                                                        style = LoongType.caption.copy(fontSize = 11.sp),
-                                                        color = p.heroText,
-                                                        modifier = Modifier.padding(horizontal = 7.dp, vertical = 2.dp)
-                                                    )
-                                                }
-                                            }
                                         }
-                                    }
-                                }
-
-                                if (session.isLoggedIn) {
-                                    Row(
-                                        modifier = Modifier
-                                            .pressScale(scaleDown = AppPressScale.CONTROL, haptic = true, onClick = onOpenCards)
-                                            .clip(RoundedCornerShape(AppRadii.full))
-                                            .background(p.heroChipBg)
-                                            .padding(start = 13.dp, end = 9.dp, top = 7.dp, bottom = 7.dp),
-                                        verticalAlignment = Alignment.CenterVertically,
-                                        horizontalArrangement = Arrangement.spacedBy(2.dp)
-                                    ) {
-                                        Text(
-                                            text = "卡片",
-                                            style = LoongType.footnoteStrong,
-                                            color = p.heroText
-                                        )
-                                        Icon(
-                                            Icons.AutoMirrored.Filled.KeyboardArrowRight,
-                                            contentDescription = null,
-                                            tint = p.heroSubText,
-                                            modifier = Modifier.size(15.dp)
-                                        )
                                     }
                                 }
                             }
@@ -1212,6 +980,7 @@ private fun QuickEntryStripCard(
     syncDoneCount: Int,
     syncTotalCount: Int,
     officialSyncProgress: String,
+    onOpenCards: () -> Unit,
     onOpenHomeCityPicker: () -> Unit,
     onSyncHomeRoutes: () -> Unit,
     onToggleNetworkSync: () -> Unit
@@ -1224,6 +993,14 @@ private fun QuickEntryStripCard(
                 .padding(vertical = 2.dp),
             horizontalArrangement = Arrangement.SpaceEvenly
         ) {
+            QuickActionTile(
+                modifier = Modifier.weight(1f),
+                icon = Icons.Default.CreditCard,
+                label = "卡片",
+                tint = if (isMist) MistyAccentPillar.orange else p.primary,
+                bg = if (isMist) MistyAccentPillar.orangeBg else p.primarySoftBg,
+                onClick = onOpenCards
+            )
             QuickActionTile(
                 modifier = Modifier.weight(1f),
                 icon = Icons.Default.LocationCity,

@@ -552,6 +552,8 @@ fun HeroHeaderOverlapContainer(
                 )
             }
 
+            val hasHeaderTitleRow = title.isNotBlank() || subtitle.isNotBlank() || trailingAction != null
+            val isCenteredProfileHero = !hasHeaderTitleRow && heroExtraContent != null
             Column(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -559,42 +561,52 @@ fun HeroHeaderOverlapContainer(
                     .padding(
                         start = AppSpace.screen,
                         end = AppSpace.screen,
-                        top = 14.dp,
-                        bottom = if (isMist) 64.dp else 72.dp
+                        top = if (isCenteredProfileHero) 92.dp else 14.dp,
+                        bottom = when {
+                            isMist -> 64.dp
+                            isCenteredProfileHero -> 118.dp
+                            else -> 72.dp
+                        }
                     )
                     .alpha(largeTitleAlpha)
             ) {
-                Row(
-                    modifier = Modifier.fillMaxWidth(),
-                    horizontalArrangement = Arrangement.SpaceBetween,
-                    verticalAlignment = Alignment.CenterVertically
-                ) {
-                    Column(modifier = Modifier.weight(1f)) {
-                        if (subtitle.isNotBlank()) {
-                            Text(
-                                text = subtitle,
-                                style = LoongType.footnoteStrong,
-                                color = p.heroSubText,
-                                maxLines = 1,
-                                overflow = TextOverflow.Ellipsis
-                            )
-                            Spacer(Modifier.height(2.dp))
+                if (hasHeaderTitleRow) {
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.SpaceBetween,
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Column(modifier = Modifier.weight(1f)) {
+                            if (subtitle.isNotBlank()) {
+                                Text(
+                                    text = subtitle,
+                                    style = LoongType.footnoteStrong,
+                                    color = p.heroSubText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                Spacer(Modifier.height(2.dp))
+                            }
+                            if (title.isNotBlank()) {
+                                Text(
+                                    text = title,
+                                    style = LoongType.largeTitle,
+                                    color = p.heroText,
+                                    maxLines = 1,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                            }
                         }
-                        Text(
-                            text = title,
-                            style = LoongType.largeTitle,
-                            color = p.heroText,
-                            maxLines = 1,
-                            overflow = TextOverflow.Ellipsis
-                        )
-                    }
-                    if (trailingAction != null) {
-                        Spacer(Modifier.width(8.dp))
-                        Box(contentAlignment = Alignment.Center, content = trailingAction)
+                        if (trailingAction != null) {
+                            Spacer(Modifier.width(8.dp))
+                            Box(contentAlignment = Alignment.Center, content = trailingAction)
+                        }
                     }
                 }
                 if (heroExtraContent != null) {
-                    Spacer(Modifier.height(14.dp))
+                    if (hasHeaderTitleRow) {
+                        Spacer(Modifier.height(14.dp))
+                    }
                     heroExtraContent()
                 }
             }
@@ -613,6 +625,7 @@ fun HeroHeaderOverlapContainer(
         }
 
         val overlapTop = when {
+            heroExtraContent != null && title.isBlank() && subtitle.isBlank() && trailingAction == null -> 222.dp
             heroExtraContent != null -> 168.dp
             subtitle.isNotBlank() -> 106.dp
             else -> 92.dp

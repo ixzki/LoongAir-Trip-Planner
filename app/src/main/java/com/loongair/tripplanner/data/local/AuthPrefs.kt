@@ -21,6 +21,7 @@ data class UserSessionState(
     val encryptedUserId: String = "",
     val certNumber: String = "",
     val updatedAt: String = "",
+    val lastKeepaliveAtMillis: Long = 0L,
     val homeCity: String = "",
     val themeStyle: String = "crimson",
     val detectedCards: List<DetectedCardInfo> = emptyList(),
@@ -113,6 +114,7 @@ class AuthPrefs(
             encryptedUserId = getSecret(KEY_ENC_UID),
             certNumber = getSecret(KEY_CERT_NO),
             updatedAt = prefs.getString(KEY_UPDATED_AT, "").orEmpty(),
+            lastKeepaliveAtMillis = prefs.getLong(KEY_LAST_KEEPALIVE_AT, 0L),
             homeCity = prefs.getString(KEY_HOME_CITY, "").orEmpty(),
             themeStyle = prefs.getString(KEY_THEME_STYLE, "crimson").orEmpty().ifBlank { "crimson" },
             detectedCards = cards,
@@ -147,6 +149,7 @@ class AuthPrefs(
             .putSecret(KEY_ENC_UID, encryptedUserId)
             .putSecret(KEY_CERT_NO, certNumber)
             .putString(KEY_UPDATED_AT, updatedAt)
+            .putLong(KEY_LAST_KEEPALIVE_AT, System.currentTimeMillis())
             .putSecret(KEY_CARDS_JSON, json.encodeToString(detectedCards))
             .putSecret(KEY_CARD_DIAG, cardDiagnostic)
             .apply()
@@ -187,8 +190,39 @@ class AuthPrefs(
             .putSecret(KEY_TOKEN, cleanToken)
             .putSecret(KEY_REFRESH_TOKEN, newRefreshToken)
             .putString(KEY_UPDATED_AT, updatedAt)
+            .putLong(KEY_LAST_KEEPALIVE_AT, System.currentTimeMillis())
             .apply()
         _state.value = readState()
+    }
+
+    /**
+     * 记录一次已认证请求或心跳保活成功，并在服务端下发新 Set-Cookie SESSION 时安全回写持久化。
+     * 若期间已被并发刷新替换过 Token（usedToken != current.sessionToken），则不覆盖更新后的凭证。
+     */
+    @Synchronized
+    fun touchSessionActivity(
+        usedToken: String,
+        rotatedSession: String? = null,
+        updatedAt: String,
+        nowMillis: Long = System.currentTimeMillis()
+    ): Boolean {
+        val cur = current()
+        if (!cur.isLoggedIn || cur.sessionToken.isBlank()) return false
+        val cleanUsed = usedToken.removePrefix("SESSION=").trim()
+        if (cleanUsed.isNotEmpty() && cur.sessionToken != cleanUsed) {
+            return false
+        }
+        val cleanRotated = rotatedSession?.removePrefix("SESSION=")?.trim().orEmpty()
+        val tokenChanged = cleanRotated.length > 8 && cleanRotated != cur.sessionToken
+        val editor = prefs.edit()
+            .putString(KEY_UPDATED_AT, updatedAt)
+            .putLong(KEY_LAST_KEEPALIVE_AT, nowMillis)
+        if (tokenChanged) {
+            editor.putSecret(KEY_TOKEN, cleanRotated)
+        }
+        editor.apply()
+        _state.value = readState()
+        return tokenChanged
     }
 
     @Synchronized
@@ -236,6 +270,7 @@ class AuthPrefs(
         private const val KEY_ENC_UID = "encrypted_user_id"
         private const val KEY_CERT_NO = "cert_number"
         private const val KEY_UPDATED_AT = "updated_at"
+        private const val KEY_LAST_KEEPALIVE_AT = "last_keepalive_at_millis"
         private const val KEY_HOME_CITY = "home_city"
         const val KEY_THEME_STYLE = "theme_style"
         private const val KEY_CARDS_JSON = "detected_cards_json"

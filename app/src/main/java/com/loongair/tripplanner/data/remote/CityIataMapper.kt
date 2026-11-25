@@ -87,6 +87,46 @@ object CityIataMapper {
     private val dynamicCityToIata = ConcurrentHashMap<String, String>()
     private val dynamicIataToCity = ConcurrentHashMap<String, String>()
     private val dynamicPinyinToCity = ConcurrentHashMap<String, String>()
+    private val dynamicCityToPinyin = ConcurrentHashMap<String, String>()
+
+    /**
+     * 规范城市名 -> 全拼（小写）映射，确保所有国内机场城市按标准汉语拼音 A-Z 准确分组与排序
+     * （特别覆盖多音字城市：重庆 chongqing、长春 changchun、长沙 changsha、厦门 xiamen、沈阳 shenyang 等）。
+     */
+    private val cityToPinyin: Map<String, String> = mapOf(
+        "阿克苏" to "akesu", "阿拉尔" to "alaer", "阿勒泰" to "aletai",
+        "巴中" to "bazhong", "白山" to "baishan", "包头" to "baotou",
+        "北京" to "beijing", "北京首都" to "beijingshoudu", "北京大兴" to "beijingdaxing",
+        "博鳌" to "boao",
+        "长春" to "changchun", "长白山" to "changbaishan", "长沙" to "changsha", "常州" to "changzhou",
+        "成都" to "chengdu", "成都双流" to "chengdushuangliu", "成都天府" to "chengdutianfu",
+        "赤峰" to "chifeng", "重庆" to "chongqing",
+        "大理" to "dali", "大连" to "dalian", "达州" to "dazhou", "德宏" to "dehong", "东营" to "dongying",
+        "恩施" to "enshi",
+        "福州" to "fuzhou",
+        "赣州" to "ganzhou", "广州" to "guangzhou", "桂林" to "guilin", "贵阳" to "guiyang",
+        "哈尔滨" to "haerbin", "海口" to "haikou", "海拉尔" to "hailaer", "邯郸" to "handan",
+        "杭州" to "hangzhou", "合肥" to "hefei", "衡阳" to "hengyang", "菏泽" to "heze",
+        "呼和浩特" to "huhehaote",
+        "鸡西" to "jixi", "济南" to "jinan", "嘉兴" to "jiaxing", "揭阳" to "jieyang", "荆州" to "jingzhou",
+        "喀什" to "kashi", "克拉玛依" to "kelamayi", "昆明" to "kunming",
+        "拉萨" to "lasa", "兰州" to "lanzhou", "丽江" to "lijiang", "临沂" to "linyi",
+        "柳州" to "liuzhou", "泸州" to "luzhou",
+        "芒市" to "mangshi", "茅台" to "maotai", "绵阳" to "mianyang",
+        "南昌" to "nanchang", "南京" to "nanjing", "南宁" to "nanning", "宁波" to "ningbo",
+        "青岛" to "qingdao", "泉州" to "quanzhou",
+        "日照" to "rizhao",
+        "三亚" to "sanya", "上海" to "shanghai", "上海浦东" to "shanghaipudong", "上海虹桥" to "shanghaihongqiao",
+        "深圳" to "shenzhen", "沈阳" to "shenyang", "石家庄" to "shijiazhuang",
+        "太原" to "taiyuan", "天津" to "tianjin", "通化" to "tonghua", "图木舒克" to "tumushuke",
+        "威海" to "weihai", "潍坊" to "weifang", "温州" to "wenzhou", "乌鲁木齐" to "wulumuqi",
+        "无锡" to "wuxi", "武汉" to "wuhan",
+        "西安" to "xian", "西宁" to "xining", "西双版纳" to "xishuangbanna",
+        "厦门" to "xiamen", "襄阳" to "xiangyang", "徐州" to "xuzhou",
+        "烟台" to "yantai", "延吉" to "yanji", "银川" to "yinchuan",
+        "湛江" to "zhanjiang", "张家界" to "zhangjiajie", "郑州" to "zhengzhou",
+        "珠海" to "zhuhai", "遵义" to "zunyi", "遵义茅台" to "zunyimaotai", "遵义新舟" to "zunyixinzhou"
+    )
 
     private val pinyinToCity: Map<String, String> = mapOf(
         "hangzhou" to "杭州", "hz" to "杭州", "ningbo" to "宁波", "nb" to "宁波",
@@ -139,7 +179,29 @@ object CityIataMapper {
         val py = pinyin.trim().lowercase().replace(" ", "")
         if (c.isNotEmpty() && py.isNotEmpty()) {
             dynamicPinyinToCity[py] = c
+            dynamicCityToPinyin[c] = py
         }
+    }
+
+    /**
+     * 获取城市的小写拼音（优先已知规范拼音表与动态表，其次使用传入的 metaPinyin）。
+     */
+    fun pinyinForCity(city: String, metaPinyin: String = ""): String {
+        val c = city.trim()
+        cityToPinyin[c]?.let { return it }
+        val meta = metaPinyin.trim().lowercase().replace(" ", "")
+        if (meta.isNotEmpty() && meta.first() in 'a'..'z') return meta
+        dynamicCityToPinyin[c]?.let { return it }
+        return c.lowercase()
+    }
+
+    /**
+     * 获取城市的 A-Z 分组首字母（无法识别时归入 '#'）。
+     */
+    fun initialLetterForCity(city: String, metaPinyin: String = ""): Char {
+        val py = pinyinForCity(city, metaPinyin)
+        val first = py.firstOrNull()?.uppercaseChar() ?: '#'
+        return if (first in 'A'..'Z') first else '#'
     }
 
     fun toApiIata(cityOrCode: String): String {

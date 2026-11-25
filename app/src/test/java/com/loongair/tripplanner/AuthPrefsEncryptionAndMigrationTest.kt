@@ -155,4 +155,62 @@ class AuthPrefsEncryptionAndMigrationTest {
         assertEquals("杭州", afterLogout.homeCity)
         assertEquals("mist", afterLogout.themeStyle)
     }
+
+    @Test
+    fun touchSessionActivity_persistsRotatedSessionAndGuardsStaleToken() {
+        val rawPrefs = InMemorySharedPreferences()
+        val cipher = JvmAesGcmCipher()
+        val authPrefs = AuthPrefs(rawPrefs, cipher)
+
+        authPrefs.saveSession(
+            token = "SESSION_INIT_123456",
+            refreshToken = "RT_KEEP_ME",
+            userName = "测试旅客",
+            mobile = "13912345678",
+            memberLevel = "金卡",
+            cardName = "畅飞卡2026",
+            secCardGrantTid = "TID_2026",
+            encryptedUserId = "ENC_UID_1",
+            certNumber = "",
+            updatedAt = "2026-11-25 14:00:00"
+        )
+
+        // 1. 服务端滚动返回新 SESSION Cookie 时安全落盘，不破坏 refreshToken 与卡包字段
+        val rotated = authPrefs.touchSessionActivity(
+            usedToken = "SESSION_INIT_123456",
+            rotatedSession = "SESSION=SESSION_ROTATED_999999",
+            updatedAt = "2026-11-25 14:20:00",
+            nowMillis = 1_700_000_000_000L
+        )
+        assertTrue(rotated)
+        val afterRotate = authPrefs.current()
+        assertEquals("SESSION_ROTATED_999999", afterRotate.sessionToken)
+        assertEquals("RT_KEEP_ME", afterRotate.refreshToken)
+        assertEquals("TID_2026", afterRotate.secCardGrantTid)
+        assertEquals("2026-11-25 14:20:00", afterRotate.updatedAt)
+        assertEquals(1_700_000_000_000L, afterRotate.lastKeepaliveAtMillis)
+
+        // 2. 并发旧请求携带过期 usedToken 返回时，不得覆盖已更新的新 SESSION
+        val staleResult = authPrefs.touchSessionActivity(
+            usedToken = "SESSION_INIT_123456",
+            rotatedSession = "SESSION_STALE_000000",
+            updatedAt = "2026-11-25 14:21:00",
+            nowMillis = 1_700_000_060_000L
+        )
+        assertFalse(staleResult)
+        assertEquals("SESSION_ROTATED_999999", authPrefs.current().sessionToken)
+        assertEquals(1_700_000_000_000L, authPrefs.current().lastKeepaliveAtMillis)
+
+        // 3. 无 Cookie 轮换的普通成功请求仅刷新最近保活时间戳
+        val touched = authPrefs.touchSessionActivity(
+            usedToken = "SESSION_ROTATED_999999",
+            rotatedSession = null,
+            updatedAt = "2026-11-25 14:35:00",
+            nowMillis = 1_700_000_900_000L
+        )
+        assertFalse(touched)
+        assertEquals("SESSION_ROTATED_999999", authPrefs.current().sessionToken)
+        assertEquals("2026-11-25 14:35:00", authPrefs.current().updatedAt)
+        assertEquals(1_700_000_900_000L, authPrefs.current().lastKeepaliveAtMillis)
+    }
 }
