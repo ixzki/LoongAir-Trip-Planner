@@ -59,6 +59,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.RadioButton
+import androidx.compose.material3.SelectableDates
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
@@ -407,8 +408,11 @@ fun SearchScreen(
                                 )
                             }
 
+                            val isGlobalBlocked = state.outboundDate.toString() in networkState.globalUnavailableDates ||
+                                state.returnDate.toString() in networkState.globalUnavailableDates
                             val (badgeText, badgeBg, badgeFg) = when {
-                                daysUntilOut < 3 -> Triple("距出发${daysUntilOut}天·不足3天", p.dangerBg, p.danger)
+                                isGlobalBlocked -> Triple("含官方屏蔽不可用日", p.dangerBg, p.danger)
+                                daysUntilOut < 3 -> Triple("距出发${daysUntilOut}天·不足3天不可兑", p.dangerBg, p.danger)
                                 daysUntilOut <= 30 -> Triple("距出发${daysUntilOut}天·可兑窗口", p.successBg, p.success)
                                 else -> Triple("距开抢约${daysUntilOut - 30}天·适合定闹钟", p.warningBg, p.warning)
                             }
@@ -616,9 +620,27 @@ fun SearchScreen(
         )
     }
 
+    val pickerSelectableDates = remember(today, networkState.globalUnavailableDates) {
+        object : SelectableDates {
+            override fun isSelectableDate(utcTimeMillis: Long): Boolean {
+                val d = Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneId.of("UTC")).toLocalDate()
+                if (d.isBefore(today)) return false
+                return d.toString() !in networkState.globalUnavailableDates
+            }
+        }
+    }
+    val blockedRangesHint = remember(networkState.globalUnavailableDates) {
+        val ranges = RoundTripMatcher.formatDateRanges(networkState.globalUnavailableDates)
+        if (ranges.isEmpty()) "起飞前不足 3 天不可兑"
+        else "已禁用不可用日期：${ranges.joinToString("、")}"
+    }
+
     if (showOutDatePicker) {
         val initialMillis = state.outboundDate.atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli()
-        val pickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = initialMillis,
+            selectableDates = pickerSelectableDates
+        )
         DatePickerDialog(
             onDismissRequest = { showOutDatePicker = false },
             confirmButton = {
@@ -634,13 +656,24 @@ fun SearchScreen(
                 TextButton(onClick = { showOutDatePicker = false }) { Text("取消") }
             }
         ) {
-            DatePicker(state = pickerState, title = { Text("选择去程日期", style = LoongType.headline, modifier = Modifier.padding(16.dp)) })
+            DatePicker(
+                state = pickerState,
+                title = {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text("选择去程日期", style = LoongType.headline)
+                        Text(blockedRangesHint, style = LoongType.caption, color = p.danger)
+                    }
+                }
+            )
         }
     }
 
     if (showRetDatePicker) {
         val initialMillis = state.returnDate.atStartOfDay(ZoneId.of("UTC")).toInstant().toEpochMilli()
-        val pickerState = rememberDatePickerState(initialSelectedDateMillis = initialMillis)
+        val pickerState = rememberDatePickerState(
+            initialSelectedDateMillis = initialMillis,
+            selectableDates = pickerSelectableDates
+        )
         DatePickerDialog(
             onDismissRequest = { showRetDatePicker = false },
             confirmButton = {
@@ -656,7 +689,15 @@ fun SearchScreen(
                 TextButton(onClick = { showRetDatePicker = false }) { Text("取消") }
             }
         ) {
-            DatePicker(state = pickerState, title = { Text("选择返程日期", style = LoongType.headline, modifier = Modifier.padding(16.dp)) })
+            DatePicker(
+                state = pickerState,
+                title = {
+                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
+                        Text("选择返程日期", style = LoongType.headline)
+                        Text(blockedRangesHint, style = LoongType.caption, color = p.danger)
+                    }
+                }
+            )
         }
     }
 

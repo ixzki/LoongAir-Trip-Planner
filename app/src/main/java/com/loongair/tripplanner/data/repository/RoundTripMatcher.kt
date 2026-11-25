@@ -271,6 +271,31 @@ object RoundTripMatcher {
     }
 
     /**
+     * 将零散 YYYY-MM-DD 日期合并为连续区间文本（例如 ["2027-01-22","2027-01-23","2027-01-24"] -> ["2027-01-22 ~ 2027-01-24"]）。
+     */
+    fun formatDateRanges(dates: Collection<String>): List<String> {
+        val parsed = dates.mapNotNull { runCatching { LocalDate.parse(it.trim()) }.getOrNull() }
+            .distinct()
+            .sorted()
+        if (parsed.isEmpty()) return emptyList()
+        val ranges = mutableListOf<String>()
+        var start = parsed.first()
+        var prev = start
+        for (i in 1 until parsed.size) {
+            val cur = parsed[i]
+            if (cur == prev.plusDays(1)) {
+                prev = cur
+            } else {
+                ranges.add(if (start == prev) start.toString() else "$start ~ $prev")
+                start = cur
+                prev = cur
+            }
+        }
+        ranges.add(if (start == prev) start.toString() else "$start ~ $prev")
+        return ranges
+    }
+
+    /**
      * 判断长龙接口业务报错文案是否明确指出该航线已取消或不在当前畅飞卡适用航线池内
      * （绝不误匹配网络波动、限流或登录过期错误）。
      */

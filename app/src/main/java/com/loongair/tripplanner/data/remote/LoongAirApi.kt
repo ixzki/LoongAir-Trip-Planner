@@ -753,7 +753,7 @@ class LoongAirApi(
             ?: return emptyMap()
         val rawMap = resObj["calenderMap"] as? JsonObject ?: return emptyMap()
         val today = ChinaClock.today()
-        val maxDate = today.plusDays(60)
+        val maxDate = today.plusDays(180)
         val todayStr = today.toString()
         val maxDateStr = maxDate.toString()
         return buildMap {

@@ -37,6 +37,7 @@ data class NetworkUiState(
     val bundledRouteCount: Int = 0,
     val invalidatedRouteCount: Int = 0,
     val invalidatedRoutes: List<InvalidatedRouteEntity> = emptyList(),
+    val globalUnavailableDates: Set<String> = emptySet(),
     val lastOfficialSyncAt: Long? = null,
     val isLoading: Boolean = true
 ) {
@@ -63,6 +64,7 @@ data class NetworkUiState(
 data class RouteCalendarDetailUiState(
     val route: NetworkRouteSummary? = null,
     val calendarByDate: Map<String, Int> = emptyMap(),
+    val globalUnavailableDates: Set<String> = emptySet(),
     val seatsByDate: Map<String, List<SeatSnapshotEntity>> = emptyMap(),
     val selectedDate: String? = null,
     val isRefreshingCalendar: Boolean = false,

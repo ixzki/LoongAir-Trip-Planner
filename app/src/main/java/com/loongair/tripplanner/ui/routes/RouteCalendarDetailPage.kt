@@ -95,8 +95,22 @@ fun RouteCalendarDetailPage(
     val fortyDays = remember(today) { (0L until 40L).map { today.plusDays(it) } }
     val groupedByMonth = remember(fortyDays) { fortyDays.groupBy { YearMonth.from(it) } }
     val visibleDateKeys = remember(fortyDays) { fortyDays.map { it.toString() }.toSet() }
-    val visibleCalendar = remember(detailState.calendarByDate, visibleDateKeys) {
-        detailState.calendarByDate.filterKeys { it in visibleDateKeys }
+    val effectiveCalendar = remember(detailState.calendarByDate, detailState.globalUnavailableDates) {
+        buildMap {
+            detailState.globalUnavailableDates.forEach { d -> put(d, -2) }
+            detailState.calendarByDate.forEach { (d, st) ->
+                if (d in detailState.globalUnavailableDates && st != 1 && st != 0) put(d, -2) else put(d, st)
+            }
+        }
+    }
+    val visibleCalendar = remember(effectiveCalendar, visibleDateKeys) {
+        effectiveCalendar.filterKeys { it in visibleDateKeys }
+    }
+    val allUnavailableDates = remember(effectiveCalendar, detailState.globalUnavailableDates) {
+        (effectiveCalendar.filterValues { it == -2 }.keys + detailState.globalUnavailableDates).toSortedSet()
+    }
+    val unavailableRanges = remember(allUnavailableDates) {
+        RoundTripMatcher.formatDateRanges(allUnavailableDates)
     }
 
     val selectedDate = detailState.selectedDate
@@ -306,6 +320,7 @@ fun RouteCalendarDetailPage(
         item {
             Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                 SelectedDateSeatsCard(
+                    today = today,
                     dateStr = selectedDate,
                     calendarStatus = selectedStatus,
                     seats = selectedSeats,
@@ -320,6 +335,7 @@ fun RouteCalendarDetailPage(
             item(key = "month_${ym.year}_${ym.monthValue}") {
                 Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                     MonthAvailabilityCard(
+                        today = today,
                         yearMonth = ym,
                         datesInMonth = datesInMonth,
                         calendarByDate = visibleCalendar,
@@ -330,11 +346,22 @@ fun RouteCalendarDetailPage(
                 }
             }
         }
+
+        // 5. 畅飞卡不可使用日期明细卡（将全网 -2 官方屏蔽期与近3天截止规则同步写入日历展示）
+        item {
+            Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
+                UnavailableDatesSummaryCard(
+                    today = today,
+                    unavailableRanges = unavailableRanges
+                )
+            }
+        }
     }
 }
 
 @Composable
 private fun SelectedDateSeatsCard(
+    today: LocalDate,
     dateStr: String,
     calendarStatus: Int?,
     seats: List<SeatSnapshotEntity>,
@@ -344,6 +371,8 @@ private fun SelectedDateSeatsCard(
     val p = LocalLoongPalette.current
     val parsedDate = remember(dateStr) { runCatching { LocalDate.parse(dateStr) }.getOrNull() }
     val dowLabel = parsedDate?.let { RoundTripMatcher.dayOfWeekLabel(it.dayOfWeek.value) }.orEmpty()
+    val isWithinThreeDaysCutoff = parsedDate != null && parsedDate.isBefore(today.plusDays(3)) &&
+        calendarStatus != 1 && calendarStatus != 0
 
     SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
         Row(
@@ -463,7 +492,19 @@ private fun SelectedDateSeatsCard(
             }
 
             calendarStatus == -2 -> {
-                Text("该日期不适用当前畅飞卡产品。", style = LoongType.footnote, color = p.textSecondary)
+                Text(
+                    "该日期处于畅飞卡官方不适用（屏蔽）时段，无法使用畅飞卡兑换。",
+                    style = LoongType.footnote,
+                    color = p.danger
+                )
+            }
+
+            isWithinThreeDaysCutoff -> {
+                Text(
+                    "该日期距起飞不足 3 天（已过前 3 天 23:40 兑换截止期），畅飞卡无法使用。",
+                    style = LoongType.footnote,
+                    color = p.textSecondary
+                )
             }
 
             calendarStatus == 0 -> {
@@ -487,6 +528,7 @@ private fun SelectedDateSeatsCard(
 
 @Composable
 private fun MonthAvailabilityCard(
+    today: LocalDate,
     yearMonth: YearMonth,
     datesInMonth: List<LocalDate>,
     calendarByDate: Map<String, Int>,
@@ -536,6 +578,7 @@ private fun MonthAvailabilityCard(
                         } else {
                             val dateStr = date.toString()
                             val status = calendarByDate[dateStr]
+                            val isWithinCutoff = date.isBefore(today.plusDays(3))
                             val cachedSeats = seatsByDate[dateStr]
                             val liveSum = cachedSeats?.let { list ->
                                 RoundTripMatcher.aggregateFlightSnapshots(list).sumOf { it.secCardLeft }
@@ -547,9 +590,10 @@ private fun MonthAvailabilityCard(
                                 liveSum != null && liveSum == 0 -> Quad(p.dangerBg, p.textPrimary, "余0", p.danger)
                                 status == 1 -> Quad(p.successBg, p.textPrimary, "可兑", p.success)
                                 status == 0 -> Quad(p.dangerBg.copy(alpha = 0.7f), p.textSecondary, "兑完", p.danger)
+                                status == -2 -> Quad(p.dangerBg, p.textSecondary, "不可用", p.danger)
+                                isWithinCutoff && status != -4 -> Quad(p.subtleSurface.copy(alpha = 0.75f), p.textTertiary, "截止", p.textTertiary)
                                 status == -1 -> Quad(p.warningBg.copy(alpha = 0.7f), p.textSecondary, "未开", p.warning)
                                 status == -3 -> Quad(p.subtleSurface, p.textTertiary, "截止", p.textTertiary)
-                                status == -2 -> Quad(p.subtleSurface, p.textTertiary, "不适", p.textTertiary)
                                 status == -4 -> Quad(p.subtleSurface.copy(alpha = 0.55f), p.textTertiary.copy(alpha = 0.55f), "无班", p.textTertiary.copy(alpha = 0.55f))
                                 else -> Quad(p.subtleSurface.copy(alpha = 0.7f), p.textSecondary, "·", p.textTertiary)
                             }
@@ -587,7 +631,7 @@ private fun MonthAvailabilityCard(
                                     text = subText,
                                     style = LoongType.caption.copy(
                                         fontSize = 10.sp,
-                                        fontWeight = if (status == 1 || (liveSum ?: 0) > 0) FontWeight.SemiBold else FontWeight.Normal,
+                                        fontWeight = if (status == 1 || status == -2 || (liveSum ?: 0) > 0) FontWeight.SemiBold else FontWeight.Normal,
                                         fontFeatureSettings = "tnum"
                                     ),
                                     color = subColor,
@@ -598,6 +642,36 @@ private fun MonthAvailabilityCard(
                     }
                 }
             }
+        }
+    }
+}
+
+@Composable
+private fun UnavailableDatesSummaryCard(
+    today: LocalDate,
+    unavailableRanges: List<String>
+) {
+    val p = LocalLoongPalette.current
+    val cutoffEnd = today.plusDays(2)
+    SoftCard(cornerRadius = AppRadii.card, contentPadding = 14.dp) {
+        Text(
+            text = "畅飞卡无法使用日期（已写入日历）",
+            style = LoongType.headline.copy(fontSize = 15.sp),
+            color = p.textPrimary
+        )
+        Spacer(Modifier.height(6.dp))
+        Text(
+            text = "• 近 3 天临期截止：$today ~ $cutoffEnd（需提前至少 3 天兑换）",
+            style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+            color = p.textSecondary
+        )
+        if (unavailableRanges.isNotEmpty()) {
+            Spacer(Modifier.height(4.dp))
+            Text(
+                text = "• 官方屏蔽不可用：${unavailableRanges.joinToString("、")}（春运/特定高峰等官方不适用时段）",
+                style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
+                color = p.danger
+            )
         }
     }
 }

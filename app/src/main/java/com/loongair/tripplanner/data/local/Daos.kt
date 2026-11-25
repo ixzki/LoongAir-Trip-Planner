@@ -46,6 +46,9 @@ interface CalendarCacheDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(entries: List<CalendarCacheEntity>)
 
+    @Insert(onConflict = OnConflictStrategy.IGNORE)
+    suspend fun insertIgnoreAll(entries: List<CalendarCacheEntity>)
+
     @Query("SELECT * FROM route_calendar WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate = :date LIMIT 1")
     suspend fun getStatus(fromCity: String, toCity: String, date: String): CalendarCacheEntity?
 

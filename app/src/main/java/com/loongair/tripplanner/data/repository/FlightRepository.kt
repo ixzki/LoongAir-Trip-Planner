@@ -194,6 +194,26 @@ class FlightRepository(
             if (flightsToInsert.isNotEmpty()) {
                 db.flightRouteDao().insertAll(flightsToInsert)
             }
+            val todayStr = ChinaClock.today().toString()
+            val validUnavailDates = bundle.unavailableDates.filter { it >= todayStr }
+            if (validUnavailDates.isNotEmpty()) {
+                val activePairs = db.officialRouteDao().getAll()
+                if (activePairs.isNotEmpty()) {
+                    val calEntries = activePairs.flatMap { route ->
+                        validUnavailDates.map { dateStr ->
+                            CalendarCacheEntity(
+                                fromCity = route.fromCity,
+                                toCity = route.toCity,
+                                flightDate = dateStr,
+                                status = -2,
+                                updatedAt = now
+                            )
+                        }
+                    }
+                    // 仅补充缺失的屏蔽日，绝不覆盖实网已拉取到的最新状态
+                    db.calendarCacheDao().insertIgnoreAll(calEntries)
+                }
+            }
             db.officialAirportDao().deleteOrphans()
         }
 
@@ -201,6 +221,28 @@ class FlightRepository(
             CityIataMapper.registerDynamic(ap.cityName, ap.airportCode, ap.pinyin)
         }
         authPrefs.setBundledNetworkVersion(bundle.version)
+    }
+
+    /**
+     * 汇总畅飞卡全网不可使用日期（status = -2 官方不适用/春运屏蔽等）：
+     * 结合内置核对日期与本机最新同步的全网日历统计（某日零可用/零约满且多数航线明确返回 -2）。
+     */
+    suspend fun getGlobalUnavailableDates(): Set<String> = withContext(Dispatchers.IO) {
+        val todayStr = ChinaClock.today().toString()
+        val result = sortedSetOf<String>()
+        readBundledNetworkAsset()?.unavailableDates
+            ?.filter { it >= todayStr }
+            ?.forEach { result.add(it) }
+
+        val byDate = db.calendarCacheDao().getAllFromDate(todayStr).groupBy { it.flightDate }
+        for ((dateStr, entries) in byDate) {
+            val hasOpenOrSoldOut = entries.any { it.status == 1 || it.status == 0 }
+            val inappCount = entries.count { it.status == -2 }
+            if (!hasOpenOrSoldOut && inappCount > 0 && inappCount * 2 >= entries.size) {
+                result.add(dateStr)
+            }
+        }
+        result
     }
 
     /**

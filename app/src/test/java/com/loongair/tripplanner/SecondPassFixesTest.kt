@@ -207,6 +207,8 @@ class SecondPassFixesTest {
         val parsed = testJson.decodeFromString<BundledChangfeiNetwork>(assetFile!!.readText(Charsets.UTF_8))
 
         assertTrue(parsed.version >= 20261125)
+        assertTrue(parsed.unavailableDates.containsAll(listOf("2027-01-22", "2027-01-23", "2027-01-24")))
+        assertEquals(listOf("2027-01-22 ~ 2027-01-24"), RoundTripMatcher.formatDateRanges(parsed.unavailableDates))
         assertEquals(75, parsed.airports.size)
         assertEquals(410, parsed.routes.size)
         assertTrue(parsed.flights.size >= 440)

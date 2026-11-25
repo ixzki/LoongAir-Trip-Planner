@@ -113,6 +113,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val allNetwork = repo.getAllNetworkRoutes()
         val officialRoutes = repo.getOfficialRoutes()
         val invalidatedRoutes = repo.getInvalidatedRoutes()
+        val globalUnavail = repo.getGlobalUnavailableDates()
 
         // 清空全部数据前不保留旧常驻城市
         if (allNetwork.isEmpty() && officialRoutes.isEmpty()) {
@@ -164,6 +165,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 bundledRouteCount = bundledCnt,
                 invalidatedRouteCount = invalidatedRoutes.size,
                 invalidatedRoutes = invalidatedRoutes,
+                globalUnavailableDates = globalUnavail,
                 lastOfficialSyncAt = lastSyncAt,
                 isLoading = false
             ).withRecomputedFilter()
@@ -279,6 +281,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         viewModelScope.launch {
             val cal = repo.getRouteCalendarMap(route.fromCity, route.toCity)
             val seats = repo.getRouteSeatSnapshotsByDate(route.fromCity, route.toCity)
+            val globalUnavail = repo.getGlobalUnavailableDates()
             val today = ChinaClock.today()
             val todayStr = today.toString()
             val maxDateStr = today.plusDays(39).toString()
@@ -290,6 +293,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             _routeDetailState.value = RouteCalendarDetailUiState(
                 route = route,
                 calendarByDate = cal,
+                globalUnavailableDates = globalUnavail,
                 seatsByDate = seats,
                 selectedDate = defaultDate,
                 isRefreshingCalendar = false,
@@ -346,6 +350,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                 }
                 val seats = repo.getRouteSeatSnapshotsByDate(currentRoute.fromCity, currentRoute.toCity)
+                val globalUnavail = repo.getGlobalUnavailableDates()
                 val updatedSummary = refreshSingleRouteInState(currentRoute.fromCity, currentRoute.toCity)
                     ?: currentRoute
                 val today = ChinaClock.today()
@@ -356,6 +361,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     st.copy(
                         route = updatedSummary,
                         calendarByDate = cal,
+                        globalUnavailableDates = globalUnavail,
                         seatsByDate = seats,
                         selectedDate = st.selectedDate
                             ?: updatedSummary.nearestAvailableDate?.takeIf { it in todayStr..maxDateStr }
@@ -380,11 +386,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         val st = _routeDetailState.value
         if (st.route == null) return
         _routeDetailState.update { it.copy(selectedDate = dateStr) }
-        val status = st.calendarByDate[dateStr]
+        val rawStatus = st.calendarByDate[dateStr]
+        val isGlobalBlocked = dateStr in st.globalUnavailableDates
+        val status = if (isGlobalBlocked && rawStatus != 1 && rawStatus != 0) -2 else rawStatus
+        val cutoffLimit = ChinaClock.today().plusDays(3).toString()
+        val isCutoffClosed = dateStr < cutoffLimit && status != 1 && status != 0
         val hasCached = !st.seatsByDate[dateStr].isNullOrEmpty()
-        if (autoQuerySeats && sessionState.value.isLoggedIn && !hasCached && status != -4 && status != -2) {
+        if (autoQuerySeats && (status == -2 || status == -4 || isCutoffClosed)) {
+            return
+        }
+        if (autoQuerySeats && sessionState.value.isLoggedIn && !hasCached) {
             queryRouteDetailSeats(dateStr)
-        } else if (autoQuerySeats && !sessionState.value.isLoggedIn && !hasCached && status != -4 && status != -2) {
+        } else if (autoQuerySeats && !sessionState.value.isLoggedIn && !hasCached) {
             showMessage("登录长龙会员后点击日期即可实时查询具体航班余票")
         }
     }
