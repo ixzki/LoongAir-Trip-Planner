@@ -493,6 +493,22 @@ fun SearchScreen(
                 }
             } else if (state.results.isEmpty()) {
                 item {
+                    val soldOutPairMatch = remember(state.originCity, state.destinationFilter, networkState.allRoutes) {
+                        if (state.destinationFilter.isBlank()) null
+                        else {
+                            val outRoute = networkState.allRoutes.firstOrNull {
+                                it.fromCity == state.originCity && it.toCity == state.destinationFilter
+                            }
+                            val retRoute = networkState.allRoutes.firstOrNull {
+                                it.fromCity == state.destinationFilter && it.toCity == state.originCity
+                            }
+                            val outSoldOut = outRoute != null && outRoute.flights.isEmpty() &&
+                                outRoute.availableDaysCount == 0 && outRoute.soldOutDaysCount > 0
+                            val retSoldOut = retRoute != null && retRoute.flights.isEmpty() &&
+                                retRoute.availableDaysCount == 0 && retRoute.soldOutDaysCount > 0
+                            if (outSoldOut || retSoldOut) (outRoute to retRoute) else null
+                        }
+                    }
                     Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                         SoftCard(contentPadding = 22.dp) {
                             Column(
@@ -500,11 +516,23 @@ fun SearchScreen(
                                 horizontalAlignment = Alignment.CenterHorizontally,
                                 verticalArrangement = Arrangement.spacedBy(6.dp)
                             ) {
-                                Text("当前时段暂无匹配的往返班次", style = LoongType.headline, color = p.textPrimary)
                                 Text(
-                                    "可以尝试放宽去程/返程起飞时段、关闭「仅看直飞」或切换其他日期。",
+                                    if (soldOutPairMatch != null) {
+                                        "${state.originCity} ⇄ ${state.destinationFilter} 近期名额已约满"
+                                    } else {
+                                        "当前时段暂无匹配的往返班次"
+                                    },
+                                    style = LoongType.headline,
+                                    color = p.textPrimary
+                                )
+                                Text(
+                                    if (soldOutPairMatch != null) {
+                                        "该航线仍在畅飞卡适用范围内，但近期已放票日期均已约满（官方暂未返回约满日班次时刻）；可在「航线」页点开该航线日历蹲守每日 10:00 新放票或退票回流。"
+                                    } else {
+                                        "可以尝试放宽去程/返程起飞时段、关闭「仅看直飞」或切换其他日期。"
+                                    },
                                     style = LoongType.footnote,
-                                    color = p.textSecondary
+                                    color = if (soldOutPairMatch != null) p.warning else p.textSecondary
                                 )
                             }
                         }

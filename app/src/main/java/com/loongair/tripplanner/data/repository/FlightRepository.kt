@@ -244,11 +244,65 @@ class FlightRepository(
             if (RoundTripMatcher.isRouteInvalidByCalendar(cmap)) {
                 val fromCity = key.substringBefore("|")
                 val toCity = key.substringAfter("|")
-                invalidateAndDeleteRoute(fromCity, toCity, "放票日历检测近期全月无执飞排班")
+                val reason = RoundTripMatcher.resolveCalendarInvalidationReason(cmap)
+                invalidateAndDeleteRoute(fromCity, toCity, reason)
                 pruned++
             }
         }
         return pruned
+    }
+
+    /**
+     * 人工触发「恢复基准重试」某条此前被剔除的失效航线，以便重新向官方接口核验是否复航或重新开放。
+     */
+    suspend fun restoreInvalidatedRouteForRecheck(
+        fromCity: String,
+        toCity: String
+    ): Boolean = withContext(Dispatchers.IO) {
+        val bundle = readBundledNetworkAsset()
+        val bRoute = bundle?.routes?.firstOrNull { it.fromCity == fromCity && it.toCity == toCity }
+        val now = System.currentTimeMillis()
+        db.withTransaction {
+            db.invalidatedRouteDao().deleteOne(fromCity, toCity)
+            if (bRoute != null) {
+                db.officialRouteDao().upsertAll(
+                    listOf(
+                        OfficialRouteEntity(
+                            fromCity = bRoute.fromCity,
+                            fromAirport = bRoute.fromAirport,
+                            fromIata = bRoute.fromIata,
+                            toCity = bRoute.toCity,
+                            toAirport = bRoute.toAirport,
+                            toIata = bRoute.toIata,
+                            updatedAt = now,
+                            dataSource = ROUTE_SOURCE_BUNDLED
+                        )
+                    )
+                )
+                val bFlights = bundle.flights
+                    .filter { it.fromCity == fromCity && it.toCity == toCity }
+                    .map { f ->
+                        FlightRouteEntity(
+                            fromCity = f.fromCity,
+                            toCity = f.toCity,
+                            fromIata = f.fromIata,
+                            toIata = f.toIata,
+                            flightNo = f.flightNo,
+                            depTime = f.depTime,
+                            arrTime = f.arrTime,
+                            duration = f.duration,
+                            aircraft = f.aircraft.ifBlank { "A320" },
+                            frequency = f.frequency,
+                            stopover = f.stopover.ifBlank { "直飞" },
+                            season = ROUTE_SOURCE_BUNDLED
+                        )
+                    }
+                if (bFlights.isNotEmpty()) {
+                    db.flightRouteDao().insertAll(bFlights)
+                }
+            }
+        }
+        bRoute != null
     }
 
     private suspend fun repairCalendarPollutedFrequencies() {
@@ -848,7 +902,13 @@ class FlightRepository(
             var touched = false
             if (key !in freshCalPairs) {
                 val calRes = runSyncStep { refreshRouteCalendar(r.fromCity, r.toCity) }
-                if (calRes.isFailure) failedCount++ else freshCalPairs.add(key)
+                if (calRes.isFailure) {
+                    if (calRes.exceptionOrNull() !is RouteInvalidatedException) {
+                        failedCount++
+                    }
+                } else {
+                    freshCalPairs.add(key)
+                }
                 touched = true
             }
             val existingFlights = db.flightRouteDao().getRoutes(r.fromCity, r.toCity)
@@ -1199,8 +1259,9 @@ class FlightRepository(
             }
 
             if (RoundTripMatcher.isRouteInvalidByCalendar(calMap)) {
-                invalidateAndDeleteRoute(fromCity, toCity, "近期全月无执飞排班或本卡不适用")
-                throw RouteInvalidatedException(fromCity, toCity, "近期全月无执飞排班或本卡不适用")
+                val reason = RoundTripMatcher.resolveCalendarInvalidationReason(calMap)
+                invalidateAndDeleteRoute(fromCity, toCity, reason)
+                throw RouteInvalidatedException(fromCity, toCity, reason)
             }
 
             val now = System.currentTimeMillis()

@@ -220,6 +220,22 @@ fun RouteCalendarDetailPage(
                             }
                         }
                         Spacer(Modifier.height(12.dp))
+                    } else if (route.isCalendarSynced && route.availableDaysCount == 0 && route.soldOutDaysCount > 0) {
+                        Box(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(14.dp))
+                                .background(p.warningBg)
+                                .padding(horizontal = 12.dp, vertical = 10.dp)
+                        ) {
+                            Text(
+                                text = "仍在畅飞卡适用范围内 · 近期 ${route.soldOutDaysCount} 个放票日名额已全部约满\n" +
+                                    "官方次卡接口对约满日期不返回班次明细；每日 10:00 新放票或遇退票回流时点「刷新日历」即可自动抓回航班时刻。",
+                                style = LoongType.footnote.copy(fontSize = 12.5.sp),
+                                color = p.warning
+                            )
+                        }
+                        Spacer(Modifier.height(12.dp))
                     }
 
                     Row(
@@ -448,6 +464,14 @@ private fun SelectedDateSeatsCard(
 
             calendarStatus == -2 -> {
                 Text("该日期不适用当前畅飞卡产品。", style = LoongType.footnote, color = p.textSecondary)
+            }
+
+            calendarStatus == 0 -> {
+                Text(
+                    "该日仍在畅飞卡适用范围内，但当前畅飞卡名额已约满（官方对约满日期不返回班次明细；可在每日 10:00 新放票或出行前点右上角「查余票」蹲守退票回流）。",
+                    style = LoongType.footnote,
+                    color = p.warning
+                )
             }
 
             else -> {

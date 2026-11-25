@@ -174,6 +174,19 @@ class SecondPassFixesTest {
         }
         assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(soldOutCal))
 
+        // 节假日/春运短时屏蔽窗（如 12 天 -2 不适用，其余为 -1 未开放）-> 有效航线，绝不误删为移出范围！
+        val holidayBlackoutCal = buildMap {
+            for (i in 0..11) put(base.plusDays(i.toLong()).toString(), -2)
+            for (i in 12..35) put(base.plusDays(i.toLong()).toString(), -1)
+        }
+        assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(holidayBlackoutCal))
+
+        // 全评估周期全部被标 -2 不适用（如子卡产品不覆盖该航线）-> 移出范围剔除，并标注精确原因
+        val fullInapplicableCal = (0..25).associate { base.plusDays(it.toLong()).toString() to -2 }
+        assertTrue(RoundTripMatcher.isRouteInvalidByCalendar(fullInapplicableCal))
+        assertTrue(RoundTripMatcher.resolveCalendarInvalidationReason(fullInapplicableCal).contains("超出当前畅飞卡适用范围"))
+        assertTrue(RoundTripMatcher.resolveCalendarInvalidationReason(suspendedCal).contains("无执飞排班"))
+
         // 尚未开放评估的全 -1 日历 -> 不误删
         val unopenedCal = (0..30).associate { base.plusDays(it.toLong()).toString() to -1 }
         assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(unopenedCal))

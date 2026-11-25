@@ -244,14 +244,30 @@ object RoundTripMatcher {
     }
 
     /**
-     * 判断 60 天放票日历是否证明该航线已停航或当前畅飞卡不适用：
-     * 日历返回不少于 14 天，且全周期无任何一天可兑 (1) 或已兑完 (0)，同时明确无班 (-4) 或不适用 (-2) 不少于 10 天。
+     * 判断 60 天放票日历是否证明该航线已停航或移出当前畅飞卡适用范围：
+     * - 只要出现任意一天「可兑 (1)」或「已兑完/约满 (0)」，说明该航线仍在畅飞卡范围内（仅名额紧俏），绝不误判为失效；
+     * - 仅在全周期零 0/1 且满足「明确无航班 (-4 >= 14)」或「明确长期不适用 (-2 >= 20 且 -4 + -2 >= 20)」时才判定失效，
+     *   避免把仅屏蔽几天节假日 (-2) 且其余日期暂未开放 (-1) 的正常航线误判移出。
      */
     fun isRouteInvalidByCalendar(calMap: Map<String, Int>): Boolean {
         if (calMap.size < 14) return false
         if (calMap.values.any { it == 1 || it == 0 }) return false
-        val explicitDeadDays = calMap.values.count { it == -4 || it == -2 }
-        return explicitDeadDays >= 10
+        val noFlightDays = calMap.values.count { it == -4 }
+        val inapplicableDays = calMap.values.count { it == -2 }
+        return noFlightDays >= 14 || (inapplicableDays >= 20 && noFlightDays + inapplicableDays >= 20)
+    }
+
+    /**
+     * 区分具体失效原因文案内涵：区分「全月停航无班」与「超出当前畅飞卡适用范围」。
+     */
+    fun resolveCalendarInvalidationReason(calMap: Map<String, Int>): String {
+        val noFlightDays = calMap.values.count { it == -4 }
+        val inapplicableDays = calMap.values.count { it == -2 }
+        return when {
+            inapplicableDays > noFlightDays && inapplicableDays >= 20 -> "超出当前畅飞卡适用范围或全期屏蔽 (-2)"
+            noFlightDays >= 14 -> "当前航季连续多周无执飞排班 (-4)"
+            else -> "已移出畅飞卡可用排班或停航"
+        }
     }
 
     /**

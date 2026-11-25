@@ -163,6 +163,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 officialSyncedCount = officialRoutes.size,
                 bundledRouteCount = bundledCnt,
                 invalidatedRouteCount = invalidatedRoutes.size,
+                invalidatedRoutes = invalidatedRoutes,
                 lastOfficialSyncAt = lastSyncAt,
                 isLoading = false
             ).withRecomputedFilter()
@@ -403,8 +404,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     ?: currentRoute
                 _routeDetailState.update { it.copy(route = updatedSummary, seatsByDate = allSeats) }
                 val totalLeft = live.sumOf { it.secCardLeft }
+                val dayCalStatus = _routeDetailState.value.calendarByDate[dateStr]
                 if (live.isEmpty()) {
-                    showMessage("$dateStr 当日暂无可查询的畅飞卡班次")
+                    if (dayCalStatus == 0) {
+                        showMessage("$dateStr 畅飞卡名额已约满（官方对约满日期不返回班次明细，可关注每日 10:00 新开窗或退票回流）")
+                    } else {
+                        showMessage("$dateStr 当日暂无可查询的畅飞卡班次")
+                    }
                 } else {
                     showMessage("$dateStr 实时余票已更新：${live.size} 个班次/舱位，畅飞卡合计余 $totalLeft 张")
                 }
@@ -701,9 +707,17 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     _searchState.update {
                         it.copy(batchProgressText = "核验中 ($done/${targets.size})：${cand.originCity} ⇄ ${cand.destinationCity}")
                     }
-                    repo.refreshRouteCalendar(cand.originCity, cand.destinationCity)
+                    try {
+                        repo.refreshRouteCalendar(cand.originCity, cand.destinationCity)
+                    } catch (_: RouteInvalidatedException) {
+                        reloadAllCityAndRouteData()
+                    }
                     delay(Random.nextLong(900, 1500))
-                    repo.refreshRouteCalendar(cand.destinationCity, cand.originCity)
+                    try {
+                        repo.refreshRouteCalendar(cand.destinationCity, cand.originCity)
+                    } catch (_: RouteInvalidatedException) {
+                        reloadAllCityAndRouteData()
+                    }
                     done++
                     refreshSingleRouteInState(cand.originCity, cand.destinationCity, triggerSearchIfRelevant = false)
                     refreshSingleRouteInState(cand.destinationCity, cand.originCity, triggerSearchIfRelevant = true)
@@ -1148,6 +1162,105 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         officialSyncProgress = ""
                     )
                 }
+            }
+        }
+    }
+
+    /**
+     * 针对当前「畅飞卡范围内但近期已全部约满」的有效航线执行专项巡检刷新：
+     * 一旦刷出新增可兑余票 (status == 1) 即自动抓取并保存航班时刻；若已被官方停航/移出范围则自动剔除。
+     */
+    fun refreshAllSoldOutRoutes() {
+        if (!sessionState.value.isLoggedIn) {
+            showMessage("请先在「我的」页登录长龙会员后再巡检约满航线")
+            return
+        }
+        if (officialSyncJob?.isActive == true) {
+            showMessage("正在同步航线中，请稍候或先停止当前同步")
+            return
+        }
+        val targets = _networkState.value.allRoutes.filter {
+            it.availableDaysCount == 0 && it.soldOutDaysCount > 0
+        }
+        if (targets.isEmpty()) {
+            showMessage("当前全网暂无全部约满航线需要巡检")
+            return
+        }
+
+        officialSyncJob = viewModelScope.launch {
+            _networkState.update {
+                it.copy(
+                    officialSyncing = true,
+                    syncingCityName = "约满航线巡检",
+                    syncDoneCount = 0,
+                    syncTotalCount = targets.size,
+                    officialSyncProgress = "准备巡检 ${targets.size} 条约满航线是否有退票或新开仓..."
+                )
+            }
+            var done = 0
+            var newlyAvailable = 0
+            var pruned = 0
+            try {
+                for (r in targets) {
+                    _networkState.update {
+                        it.copy(
+                            syncDoneCount = done,
+                            syncTotalCount = targets.size,
+                            officialSyncProgress = "巡检约满航线 ($done/${targets.size})：${r.fromCity} → ${r.toCity}"
+                        )
+                    }
+                    try {
+                        val cal = repo.refreshRouteCalendar(r.fromCity, r.toCity)
+                        val availCount = cal.values.count { it == 1 }
+                        if (availCount > 0) {
+                            newlyAvailable++
+                            if (r.flights.isEmpty()) {
+                                suspendRunCatching {
+                                    repo.ensureRouteScheduleSampled(r.fromCity, r.toCity, cal)
+                                }
+                            }
+                        }
+                    } catch (_: RouteInvalidatedException) {
+                        pruned++
+                    }
+                    done++
+                }
+                reloadAllCityAndRouteData()
+                val summaryMsg = buildString {
+                    append("已巡检 $done 条约满航线")
+                    if (newlyAvailable > 0) append("，其中 $newlyAvailable 条刷出可兑余票！")
+                    else append("，暂无新放票或退票回流")
+                    if (pruned > 0) append("（自动剔除 $pruned 条停航/移出范围航线）")
+                }
+                showMessage(summaryMsg)
+            } catch (_: CancellationException) {
+                withContext(NonCancellable) { reloadAllCityAndRouteData() }
+                showMessage("已停止约满航线巡检（已完成 $done/${targets.size}）")
+            } catch (e: Exception) {
+                withContext(NonCancellable) { reloadAllCityAndRouteData() }
+                showMessage("巡检约满航线中断：${e.message}")
+            } finally {
+                _networkState.update {
+                    it.copy(
+                        officialSyncing = false,
+                        syncingCityName = "",
+                        syncDoneCount = 0,
+                        syncTotalCount = 0,
+                        officialSyncProgress = ""
+                    )
+                }
+            }
+        }
+    }
+
+    fun restoreInvalidatedRouteAndRecheck(fromCity: String, toCity: String) {
+        viewModelScope.launch {
+            repo.restoreInvalidatedRouteForRecheck(fromCity, toCity)
+            reloadAllCityAndRouteData()
+            if (sessionState.value.isLoggedIn) {
+                refreshNetworkRouteCalendar(fromCity, toCity)
+            } else {
+                showMessage("已恢复 $fromCity → $toCity，请登录后核验最新日历")
             }
         }
     }

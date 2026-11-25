@@ -65,6 +65,7 @@ import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.AssistChip
 import androidx.compose.material3.Button
 import androidx.compose.material3.CircularProgressIndicator
+import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
 import androidx.compose.material3.Icon
 import androidx.compose.material3.LinearProgressIndicator
@@ -363,53 +364,187 @@ fun AccountScreen(viewModel: MainViewModel) {
     if (showOfficialDestsDialog) {
         val activeHome = session.homeCity.ifBlank { searchState.originCity.ifBlank { "杭州" } }
         val dests = searchState.officialAllowedDestinations.orEmpty()
+        val soldOutRoutes = remember(networkState.allRoutes) {
+            networkState.allRoutes.filter { it.availableDaysCount == 0 && it.soldOutDaysCount > 0 }
+        }
+        val invalidatedList = networkState.invalidatedRoutes
         val liveVerifiedCnt = (networkState.officialSyncedCount - networkState.bundledRouteCount).coerceAtLeast(0)
+        var selectedTab by remember { mutableIntStateOf(0) } // 0=常驻可达, 1=已约满(卡内有效), 2=已移出/停航
+
         AlertDialog(
             onDismissRequest = { showOfficialDestsDialog = false },
             containerColor = p.cardBg,
-            title = { Text("${activeHome}出发 · 畅飞航网 (${dests.size})", style = LoongType.headline, color = p.textPrimary) },
+            title = { Text("畅飞航网管理", style = LoongType.headline, color = p.textPrimary) },
             text = {
                 Column(
                     modifier = Modifier
                         .fillMaxWidth()
+                        .height(360.dp)
                         .verticalScroll(rememberScrollState()),
                     verticalArrangement = Arrangement.spacedBy(10.dp)
                 ) {
                     Surface(color = p.subtleSurface, shape = RoundedCornerShape(12.dp)) {
                         Text(
-                            text = "全网有效航线 ${networkState.officialSyncedCount} 条（实时校验 $liveVerifiedCnt 条 · 内置基准 ${networkState.bundledRouteCount} 条 · 已剔除失效 ${networkState.invalidatedRouteCount} 条）",
+                            text = "有效航线 ${networkState.officialSyncedCount} 条（实时校验 $liveVerifiedCnt · 内置基准 ${networkState.bundledRouteCount}）\n" +
+                                "卡内已约满 ${soldOutRoutes.size} 条 · 已移出/停航剔除 ${invalidatedList.size} 条",
                             style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
                             color = p.textSecondary,
                             modifier = Modifier.padding(horizontal = 12.dp, vertical = 9.dp)
                         )
                     }
-                    if (dests.isEmpty()) {
-                        Text(
-                            "尚未同步该城市航线，请点击下方按钮重新拉取。",
-                            style = LoongType.footnote,
-                            color = p.textSecondary
+                    Row(
+                        modifier = Modifier.fillMaxWidth(),
+                        horizontalArrangement = Arrangement.spacedBy(6.dp)
+                    ) {
+                        FilterChip(
+                            selected = selectedTab == 0,
+                            onClick = { selectedTab = 0 },
+                            label = { Text("$activeHome(${dests.size})", style = LoongType.caption) }
                         )
-                    } else {
-                        FlowRow(
-                            horizontalArrangement = Arrangement.spacedBy(6.dp),
-                            verticalArrangement = Arrangement.spacedBy(4.dp)
-                        ) {
-                            dests.forEach { city ->
-                                AssistChip(
+                        FilterChip(
+                            selected = selectedTab == 1,
+                            onClick = { selectedTab = 1 },
+                            label = { Text("全约满(${soldOutRoutes.size})", style = LoongType.caption) }
+                        )
+                        FilterChip(
+                            selected = selectedTab == 2,
+                            onClick = { selectedTab = 2 },
+                            label = { Text("已移出(${invalidatedList.size})", style = LoongType.caption) }
+                        )
+                    }
+                    when (selectedTab) {
+                        0 -> {
+                            if (dests.isEmpty()) {
+                                Text(
+                                    "尚未同步「$activeHome」航线，请点击下方按钮重新拉取。",
+                                    style = LoongType.footnote,
+                                    color = p.textSecondary
+                                )
+                            } else {
+                                FlowRow(
+                                    horizontalArrangement = Arrangement.spacedBy(6.dp),
+                                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                                ) {
+                                    dests.forEach { city ->
+                                        AssistChip(
+                                            onClick = {
+                                                viewModel.setDestinationFilter(city)
+                                                viewModel.showMessage("已将往返搜索目标设为「$city」")
+                                                showOfficialDestsDialog = false
+                                            },
+                                            label = { Text(city, style = LoongType.caption) }
+                                        )
+                                    }
+                                }
+                            }
+                        }
+
+                        1 -> {
+                            Text(
+                                "以下航线仍在畅飞卡适用范围内，只是近期已放票日期名额全部约满（非移出卡外）；可在每日 10:00 开抢新窗或临近出行前点击下方按钮巡检退票回流。",
+                                style = LoongType.caption,
+                                color = p.textSecondary
+                            )
+                            if (soldOutRoutes.isNotEmpty() && session.isLoggedIn) {
+                                OutlinedButton(
+                                    enabled = !networkState.officialSyncing,
+                                    shape = RoundedCornerShape(12.dp),
                                     onClick = {
-                                        viewModel.setDestinationFilter(city)
-                                        viewModel.showMessage("已将往返搜索目标设为「$city」")
+                                        viewModel.refreshAllSoldOutRoutes()
                                         showOfficialDestsDialog = false
                                     },
-                                    label = { Text(city, style = LoongType.caption) }
-                                )
+                                    modifier = Modifier.fillMaxWidth()
+                                ) {
+                                    Icon(Icons.Default.Refresh, contentDescription = null, modifier = Modifier.size(16.dp))
+                                    Spacer(Modifier.width(6.dp))
+                                    Text("一键巡检全部约满航线余票", style = LoongType.footnoteStrong)
+                                }
+                            }
+                            if (soldOutRoutes.isEmpty()) {
+                                Text("当前全网暂无近期全部约满的航线。", style = LoongType.footnote, color = p.textSecondary)
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    soldOutRoutes.forEach { r ->
+                                        Surface(color = p.warningBg, shape = RoundedCornerShape(10.dp)) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        "${r.fromCity} → ${r.toCity}",
+                                                        style = LoongType.footnoteStrong,
+                                                        color = p.textPrimary
+                                                    )
+                                                    Text(
+                                                        if (r.flights.isNotEmpty()) {
+                                                            "已有时刻 ${r.flights.size} 班 · 近${r.soldOutDaysCount}天约满"
+                                                        } else {
+                                                            "近${r.soldOutDaysCount}个放票日约满（有余票即自动抓取时刻）"
+                                                        },
+                                                        style = LoongType.caption,
+                                                        color = p.warning
+                                                    )
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+
+                        else -> {
+                            Text(
+                                "以下航线经长龙官方接口确认已下线、停航无班或超出当前畅飞卡适用范围，已从本地与内置基准库自动剔除。",
+                                style = LoongType.caption,
+                                color = p.textSecondary
+                            )
+                            if (invalidatedList.isEmpty()) {
+                                Text("当前暂未检测到被移出或停航失效的航线。", style = LoongType.footnote, color = p.textSecondary)
+                            } else {
+                                Column(verticalArrangement = Arrangement.spacedBy(6.dp)) {
+                                    invalidatedList.forEach { inv ->
+                                        Surface(color = p.dangerBg, shape = RoundedCornerShape(10.dp)) {
+                                            Row(
+                                                modifier = Modifier
+                                                    .fillMaxWidth()
+                                                    .padding(horizontal = 10.dp, vertical = 8.dp),
+                                                horizontalArrangement = Arrangement.SpaceBetween,
+                                                verticalAlignment = Alignment.CenterVertically
+                                            ) {
+                                                Column(modifier = Modifier.weight(1f)) {
+                                                    Text(
+                                                        "${inv.fromCity} → ${inv.toCity}",
+                                                        style = LoongType.footnoteStrong,
+                                                        color = p.textPrimary
+                                                    )
+                                                    Text(
+                                                        inv.reason,
+                                                        style = LoongType.caption,
+                                                        color = p.danger
+                                                    )
+                                                }
+                                                TextButton(
+                                                    onClick = {
+                                                        viewModel.restoreInvalidatedRouteAndRecheck(inv.fromCity, inv.toCity)
+                                                    }
+                                                ) {
+                                                    Text("重检", style = LoongType.caption)
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
                             }
                         }
                     }
                 }
             },
             confirmButton = {
-                TextButton(onClick = { viewModel.checkOfficialDestinationsForHome() }) { Text("重新拉取", style = LoongType.filter) }
+                TextButton(onClick = { viewModel.checkOfficialDestinationsForHome() }) { Text("刷新常驻城", style = LoongType.filter) }
             },
             dismissButton = {
                 TextButton(onClick = { showOfficialDestsDialog = false }) { Text("关闭") }

@@ -1,5 +1,6 @@
 package com.loongair.tripplanner.ui
 
+import com.loongair.tripplanner.data.local.InvalidatedRouteEntity
 import com.loongair.tripplanner.data.local.SeatSnapshotEntity
 import com.loongair.tripplanner.data.remote.ChinaProvincePath
 import com.loongair.tripplanner.data.remote.CityMeta
@@ -35,6 +36,7 @@ data class NetworkUiState(
     val officialSyncedCount: Int = 0,
     val bundledRouteCount: Int = 0,
     val invalidatedRouteCount: Int = 0,
+    val invalidatedRoutes: List<InvalidatedRouteEntity> = emptyList(),
     val lastOfficialSyncAt: Long? = null,
     val isLoading: Boolean = true
 ) {
