@@ -375,7 +375,7 @@ internal fun SettingsSubPage(
                     )
                     SettingsRowItem(
                         icon = Icons.Default.Info,
-                        title = "关于 长龙畅飞规划",
+                        title = "关于 畅飞行",
                         trailingPill = "v${BuildConfig.VERSION_NAME}",
                         onClick = onOpenAbout
                     )
@@ -432,7 +432,7 @@ internal fun AboutSubPage(onBack: () -> Unit) {
         contentPadding = PaddingValues(bottom = 44.dp),
         verticalArrangement = Arrangement.spacedBy(20.dp)
     ) {
-        item { SubPageHeader(title = "关于 长龙畅飞规划", onBack = onBack) }
+        item { SubPageHeader(title = "关于 畅飞行", onBack = onBack) }
 
         item {
             Column(
@@ -464,7 +464,7 @@ internal fun AboutSubPage(onBack: () -> Unit) {
                     )
                 }
                 Text(
-                    text = "长龙畅飞规划",
+                    text = "畅飞行",
                     style = LoongType.headline,
                     color = p.textPrimary
                 )

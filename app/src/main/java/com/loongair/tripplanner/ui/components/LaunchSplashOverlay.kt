@@ -335,11 +335,11 @@ fun FullScreenLaunchSplash(
                 }
             ) {
                 Text(
-                    text = "长龙畅飞规划",
+                    text = "畅飞行",
                     style = LoongType.largeTitle.copy(
-                        fontSize = 28.sp,
+                        fontSize = 30.sp,
                         fontWeight = FontWeight.Bold,
-                        letterSpacing = 0.5.sp
+                        letterSpacing = 1.sp
                     ),
                     color = mainFg
                 )
