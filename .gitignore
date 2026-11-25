@@ -5,6 +5,8 @@
 /keystore.properties
 *.jks
 *.keystore
+*.apk
+*.aab
 /.idea
 .DS_Store
 /build
