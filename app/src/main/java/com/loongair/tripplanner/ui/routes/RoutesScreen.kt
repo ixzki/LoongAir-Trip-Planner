@@ -833,9 +833,8 @@ private fun NetworkRouteDetailCard(
             )
         }
 
-        Spacer(Modifier.height(10.dp))
-
         if (route.flights.isNotEmpty()) {
+            Spacer(Modifier.height(10.dp))
             Box(
                 modifier = Modifier
                     .fillMaxWidth()
@@ -888,19 +887,6 @@ private fun NetworkRouteDetailCard(
                     }
                 }
             }
-        } else {
-            val emptyHint = when {
-                !route.isCalendarSynced -> "畅飞卡范围内航线 · 点击加载放票日历与航班时刻"
-                route.availableDaysCount > 0 -> "畅飞卡范围内航线 · 点击自动补全具体航班时刻与班期"
-                route.soldOutDaysCount > 0 -> "仍在畅飞卡范围内 · 近${route.soldOutDaysCount}个放票日已全部约满（点进日历可蹲守每日 10:00 新放票或退票）"
-                !route.hasOperatingDaysInCalendar -> "畅飞卡范围内航线 · 当前航季暂无执飞排班（点击刷新核验）"
-                else -> "仍在畅飞卡范围内 · 近期暂未开放兑换（点击查看日历）"
-            }
-            Text(
-                emptyHint,
-                style = LoongType.footnote,
-                color = if (route.availableDaysCount == 0 && route.soldOutDaysCount > 0) p.warning else p.textSecondary
-            )
         }
     }
 }
