@@ -90,7 +90,6 @@ import com.loongair.tripplanner.ui.components.HeroCircleActionButton
 import com.loongair.tripplanner.ui.components.HeroHeaderOverlapContainer
 import com.loongair.tripplanner.ui.components.LacquerPullRefreshBox
 import com.loongair.tripplanner.ui.components.LiveSyncProgressBanner
-import com.loongair.tripplanner.ui.components.SectionTitleRow
 import com.loongair.tripplanner.ui.components.SoftCard
 import com.loongair.tripplanner.ui.components.TonePillBadge
 import com.loongair.tripplanner.ui.components.rememberHeaderCollapseProgress
@@ -272,25 +271,10 @@ fun RoutesScreen(
                     }
                 }
 
-                // 2. 城市筛选区（已按用户要求精简：移除「仅看官方已同步」与底部同步说明）
+                // 2. 城市筛选卡（精简移除顶部「城市筛选」与「航线详情」标题栏）
                 item {
-                    val hasFilter = state.fromCityFilter.isNotBlank() || state.toCityFilter.isNotBlank()
-                    Column(
-                        modifier = Modifier
-                            .padding(top = 6.dp)
-                            .padding(horizontal = AppSpace.groupInset),
-                        verticalArrangement = Arrangement.spacedBy(10.dp)
-                    ) {
-                        SectionTitleRow(
-                            title = "城市筛选",
-                            actionText = if (hasFilter) "重置筛选" else "同步官方航线",
-                            onActionClick = {
-                                if (hasFilter) viewModel.setNetworkFilter(fromCity = "", toCity = "")
-                                else onGoToAccountSync()
-                            }
-                        )
-
-                        SoftCard(contentPadding = 14.dp) {
+                    Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
+                        SoftCard(contentPadding = 12.dp) {
                             Row(
                                 modifier = Modifier.fillMaxWidth(),
                                 verticalAlignment = Alignment.CenterVertically,
@@ -343,17 +327,7 @@ fun RoutesScreen(
                     }
                 }
 
-                // 3. 航线详情标题
-                item {
-                    SectionTitleRow(
-                        title = "航线详情 (${filteredRoutes.size})",
-                        modifier = Modifier
-                            .padding(top = 6.dp)
-                            .padding(horizontal = AppSpace.groupInset)
-                    )
-                }
-
-                // 4. 航线详情列表（点击任意航线卡片进入 60 天全日期余票与班期校准页）
+                // 3. 航线详情列表（点击任意航线卡片进入 40 天日历与余票详情页）
                 if (state.isLoading) {
                     item {
                         Box(
