@@ -244,25 +244,67 @@ object RoundTripMatcher {
     }
 
     /**
+     * 长龙畅飞卡官方适用航班日期区间（2026/2027 整年有效窗口）：
+     * - 2026-10-25 ~ 2027-01-21
+     * - 2027-03-03 ~ 2027-04-27
+     * - 2027-05-07 ~ 2027-06-30
+     * - 2027-09-01 ~ 2027-09-26
+     * - 2027-10-11 ~ 2027-10-30
+     */
+    val OFFICIAL_VALID_DATE_WINDOWS: List<Pair<LocalDate, LocalDate>> = listOf(
+        LocalDate.of(2026, 10, 25) to LocalDate.of(2027, 1, 21),
+        LocalDate.of(2027, 3, 3) to LocalDate.of(2027, 4, 27),
+        LocalDate.of(2027, 5, 7) to LocalDate.of(2027, 6, 30),
+        LocalDate.of(2027, 9, 1) to LocalDate.of(2027, 9, 26),
+        LocalDate.of(2027, 10, 11) to LocalDate.of(2027, 10, 30)
+    )
+
+    val OFFICIAL_CARD_END_DATE: LocalDate = LocalDate.of(2027, 10, 30)
+
+    fun isWithinOfficialChangfeiDates(date: LocalDate): Boolean =
+        OFFICIAL_VALID_DATE_WINDOWS.any { (start, end) -> !date.isBefore(start) && !date.isAfter(end) }
+
+    fun officialBlackoutDates(fromDate: LocalDate = LocalDate.of(2026, 10, 25)): Set<String> {
+        val out = sortedSetOf<String>()
+        var cur = if (fromDate.isBefore(LocalDate.of(2026, 10, 25))) LocalDate.of(2026, 10, 25) else fromDate
+        while (!cur.isAfter(OFFICIAL_CARD_END_DATE)) {
+            if (!isWithinOfficialChangfeiDates(cur)) {
+                out.add(cur.toString())
+            }
+            cur = cur.plusDays(1)
+        }
+        return out
+    }
+
+    /**
      * 判断 60 天放票日历是否证明该航线已停航或移出当前畅飞卡适用范围：
      * - 只要出现任意一天「可兑 (1)」或「已兑完/约满 (0)」，说明该航线仍在畅飞卡范围内（仅名额紧俏），绝不误判为失效；
-     * - 仅在全周期零 0/1 且满足「明确无航班 (-4 >= 14)」或「明确长期不适用 (-2 >= 20 且 -4 + -2 >= 20)」时才判定失效，
-     *   避免把仅屏蔽几天节假日 (-2) 且其余日期暂未开放 (-1) 的正常航线误判移出。
+     * - 自动排除官方已知全局屏蔽/春运暑运等不可用日期（excludedGlobalDates），绝不因整卡进入春运/暑运而误删航线；
+     * - 仅在剩余日期满足「明确无航班 (-4 >= 14)」或「在适用窗口内明确长期不适用 (-2 >= 20 且 -4 + -2 >= 20)」时才判定失效。
      */
-    fun isRouteInvalidByCalendar(calMap: Map<String, Int>): Boolean {
+    fun isRouteInvalidByCalendar(
+        calMap: Map<String, Int>,
+        excludedGlobalDates: Set<String> = officialBlackoutDates()
+    ): Boolean {
         if (calMap.size < 14) return false
         if (calMap.values.any { it == 1 || it == 0 }) return false
-        val noFlightDays = calMap.values.count { it == -4 }
-        val inapplicableDays = calMap.values.count { it == -2 }
+        val effectiveEntries = calMap.filterKeys { it !in excludedGlobalDates }
+        if (effectiveEntries.size < 14) return false
+        val noFlightDays = effectiveEntries.values.count { it == -4 }
+        val inapplicableDays = effectiveEntries.values.count { it == -2 }
         return noFlightDays >= 14 || (inapplicableDays >= 20 && noFlightDays + inapplicableDays >= 20)
     }
 
     /**
      * 区分具体失效原因文案内涵：区分「全月停航无班」与「超出当前畅飞卡适用范围」。
      */
-    fun resolveCalendarInvalidationReason(calMap: Map<String, Int>): String {
-        val noFlightDays = calMap.values.count { it == -4 }
-        val inapplicableDays = calMap.values.count { it == -2 }
+    fun resolveCalendarInvalidationReason(
+        calMap: Map<String, Int>,
+        excludedGlobalDates: Set<String> = officialBlackoutDates()
+    ): String {
+        val effectiveEntries = calMap.filterKeys { it !in excludedGlobalDates }
+        val noFlightDays = effectiveEntries.values.count { it == -4 }
+        val inapplicableDays = effectiveEntries.values.count { it == -2 }
         return when {
             inapplicableDays > noFlightDays && inapplicableDays >= 20 -> "超出当前畅飞卡适用范围或全期屏蔽 (-2)"
             noFlightDays >= 14 -> "当前航季连续多周无执飞排班 (-4)"

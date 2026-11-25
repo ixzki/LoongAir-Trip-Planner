@@ -95,22 +95,24 @@ fun RouteCalendarDetailPage(
     val fortyDays = remember(today) { (0L until 40L).map { today.plusDays(it) } }
     val groupedByMonth = remember(fortyDays) { fortyDays.groupBy { YearMonth.from(it) } }
     val visibleDateKeys = remember(fortyDays) { fortyDays.map { it.toString() }.toSet() }
-    val effectiveCalendar = remember(detailState.calendarByDate, detailState.globalUnavailableDates) {
+    val effectiveCalendar = remember(detailState.calendarByDate, detailState.globalUnavailableDates, fortyDays) {
         buildMap {
             detailState.globalUnavailableDates.forEach { d -> put(d, -2) }
+            fortyDays.forEach { d ->
+                if (!RoundTripMatcher.isWithinOfficialChangfeiDates(d)) {
+                    put(d.toString(), -2)
+                }
+            }
             detailState.calendarByDate.forEach { (d, st) ->
-                if (d in detailState.globalUnavailableDates && st != 1 && st != 0) put(d, -2) else put(d, st)
+                val parsed = runCatching { LocalDate.parse(d) }.getOrNull()
+                val isBlocked = d in detailState.globalUnavailableDates ||
+                    (parsed != null && !RoundTripMatcher.isWithinOfficialChangfeiDates(parsed))
+                if (isBlocked && st != 1 && st != 0) put(d, -2) else put(d, st)
             }
         }
     }
     val visibleCalendar = remember(effectiveCalendar, visibleDateKeys) {
         effectiveCalendar.filterKeys { it in visibleDateKeys }
-    }
-    val allUnavailableDates = remember(effectiveCalendar, detailState.globalUnavailableDates) {
-        (effectiveCalendar.filterValues { it == -2 }.keys + detailState.globalUnavailableDates).toSortedSet()
-    }
-    val unavailableRanges = remember(allUnavailableDates) {
-        RoundTripMatcher.formatDateRanges(allUnavailableDates)
     }
 
     val selectedDate = detailState.selectedDate
@@ -344,16 +346,6 @@ fun RouteCalendarDetailPage(
                         onSelectDate = onSelectDate
                     )
                 }
-            }
-        }
-
-        // 5. 畅飞卡不可使用日期明细卡（将全网 -2 官方屏蔽期与近3天截止规则同步写入日历展示）
-        item {
-            Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
-                UnavailableDatesSummaryCard(
-                    today = today,
-                    unavailableRanges = unavailableRanges
-                )
             }
         }
     }
@@ -642,36 +634,6 @@ private fun MonthAvailabilityCard(
                     }
                 }
             }
-        }
-    }
-}
-
-@Composable
-private fun UnavailableDatesSummaryCard(
-    today: LocalDate,
-    unavailableRanges: List<String>
-) {
-    val p = LocalLoongPalette.current
-    val cutoffEnd = today.plusDays(2)
-    SoftCard(cornerRadius = AppRadii.card, contentPadding = 14.dp) {
-        Text(
-            text = "畅飞卡无法使用日期（已写入日历）",
-            style = LoongType.headline.copy(fontSize = 15.sp),
-            color = p.textPrimary
-        )
-        Spacer(Modifier.height(6.dp))
-        Text(
-            text = "• 近 3 天临期截止：$today ~ $cutoffEnd（需提前至少 3 天兑换）",
-            style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-            color = p.textSecondary
-        )
-        if (unavailableRanges.isNotEmpty()) {
-            Spacer(Modifier.height(4.dp))
-            Text(
-                text = "• 官方屏蔽不可用：${unavailableRanges.joinToString("、")}（春运/特定高峰等官方不适用时段）",
-                style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-                color = p.danger
-            )
         }
     }
 }

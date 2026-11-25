@@ -624,15 +624,11 @@ fun SearchScreen(
         object : SelectableDates {
             override fun isSelectableDate(utcTimeMillis: Long): Boolean {
                 val d = Instant.ofEpochMilli(utcTimeMillis).atZone(ZoneId.of("UTC")).toLocalDate()
-                if (d.isBefore(today)) return false
+                if (d.isBefore(today) || d.isAfter(RoundTripMatcher.OFFICIAL_CARD_END_DATE)) return false
+                if (!RoundTripMatcher.isWithinOfficialChangfeiDates(d)) return false
                 return d.toString() !in networkState.globalUnavailableDates
             }
         }
-    }
-    val blockedRangesHint = remember(networkState.globalUnavailableDates) {
-        val ranges = RoundTripMatcher.formatDateRanges(networkState.globalUnavailableDates)
-        if (ranges.isEmpty()) "起飞前不足 3 天不可兑"
-        else "已禁用不可用日期：${ranges.joinToString("、")}"
     }
 
     if (showOutDatePicker) {
@@ -659,10 +655,11 @@ fun SearchScreen(
             DatePicker(
                 state = pickerState,
                 title = {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Text("选择去程日期", style = LoongType.headline)
-                        Text(blockedRangesHint, style = LoongType.caption, color = p.danger)
-                    }
+                    Text(
+                        "选择去程日期",
+                        style = LoongType.headline,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             )
         }
@@ -692,10 +689,11 @@ fun SearchScreen(
             DatePicker(
                 state = pickerState,
                 title = {
-                    Column(modifier = Modifier.padding(horizontal = 16.dp, vertical = 12.dp)) {
-                        Text("选择返程日期", style = LoongType.headline)
-                        Text(blockedRangesHint, style = LoongType.caption, color = p.danger)
-                    }
+                    Text(
+                        "选择返程日期",
+                        style = LoongType.headline,
+                        modifier = Modifier.padding(16.dp)
+                    )
                 }
             )
         }

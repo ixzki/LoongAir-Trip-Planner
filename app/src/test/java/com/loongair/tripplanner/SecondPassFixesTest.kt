@@ -181,8 +181,37 @@ class SecondPassFixesTest {
         }
         assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(holidayBlackoutCal))
 
-        // 全评估周期全部被标 -2 不适用（如子卡产品不覆盖该航线）-> 移出范围剔除，并标注精确原因
-        val fullInapplicableCal = (0..25).associate { base.plusDays(it.toLong()).toString() to -2 }
+        // 全部 5 个官方适用航班窗口 + 4 段官方不可用窗口精准匹配校验
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2026, 10, 25)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 1, 21)))
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 1, 22))) // 春运开始
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 3, 2)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 3, 3)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 4, 27)))
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 4, 28))) // 五一
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 5, 6)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 5, 7)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 6, 30)))
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 7, 1)))  // 暑运
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 8, 31)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 9, 1)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 9, 26)))
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 9, 27))) // 中秋国庆
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 10, 10)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 10, 11)))
+        assertTrue(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 10, 30)))
+        assertFalse(RoundTripMatcher.isWithinOfficialChangfeiDates(LocalDate.of(2027, 10, 31)))
+
+        // 暑运全月 (2027-07-01..2027-08-31) 接口全部返回 -2，必须被识别为全局不可用日并豁免删线！
+        val summerBlackoutCal = (0..59).associate {
+            LocalDate.of(2027, 7, 1).plusDays(it.toLong()).toString() to -2
+        }
+        assertFalse(RoundTripMatcher.isRouteInvalidByCalendar(summerBlackoutCal))
+
+        // 全评估周期全部被标 -2 不适用（如在官方可用窗口内也报 -2）-> 移出范围剔除，并标注精确原因
+        val fullInapplicableCal = (0..25).associate {
+            LocalDate.of(2027, 3, 3).plusDays(it.toLong()).toString() to -2
+        }
         assertTrue(RoundTripMatcher.isRouteInvalidByCalendar(fullInapplicableCal))
         assertTrue(RoundTripMatcher.resolveCalendarInvalidationReason(fullInapplicableCal).contains("超出当前畅飞卡适用范围"))
         assertTrue(RoundTripMatcher.resolveCalendarInvalidationReason(suspendedCal).contains("无执飞排班"))
@@ -206,9 +235,17 @@ class SecondPassFixesTest {
         assertNotNull("bundled_changfei_network.json should exist", assetFile)
         val parsed = testJson.decodeFromString<BundledChangfeiNetwork>(assetFile!!.readText(Charsets.UTF_8))
 
-        assertTrue(parsed.version >= 20261125)
-        assertTrue(parsed.unavailableDates.containsAll(listOf("2027-01-22", "2027-01-23", "2027-01-24")))
-        assertEquals(listOf("2027-01-22 ~ 2027-01-24"), RoundTripMatcher.formatDateRanges(parsed.unavailableDates))
+        assertTrue(parsed.version >= 2026112503)
+        assertEquals(125, parsed.unavailableDates.size)
+        assertEquals(
+            listOf(
+                "2027-01-22 ~ 2027-03-02",
+                "2027-04-28 ~ 2027-05-06",
+                "2027-07-01 ~ 2027-08-31",
+                "2027-09-27 ~ 2027-10-10"
+            ),
+            RoundTripMatcher.formatDateRanges(parsed.unavailableDates)
+        )
         assertEquals(75, parsed.airports.size)
         assertEquals(410, parsed.routes.size)
         assertTrue(parsed.flights.size >= 440)

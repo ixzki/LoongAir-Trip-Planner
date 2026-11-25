@@ -194,8 +194,12 @@ class FlightRepository(
             if (flightsToInsert.isNotEmpty()) {
                 db.flightRouteDao().insertAll(flightsToInsert)
             }
-            val todayStr = ChinaClock.today().toString()
-            val validUnavailDates = bundle.unavailableDates.filter { it >= todayStr }
+            val today = ChinaClock.today()
+            val todayStr = today.toString()
+            val seedMaxStr = today.plusDays(120).toString()
+            val validUnavailDates = (bundle.unavailableDates.toSet() + RoundTripMatcher.officialBlackoutDates(today))
+                .filter { it in todayStr..seedMaxStr }
+                .sorted()
             if (validUnavailDates.isNotEmpty()) {
                 val activePairs = db.officialRouteDao().getAll()
                 if (activePairs.isNotEmpty()) {
@@ -224,12 +228,14 @@ class FlightRepository(
     }
 
     /**
-     * 汇总畅飞卡全网不可使用日期（status = -2 官方不适用/春运屏蔽等）：
-     * 结合内置核对日期与本机最新同步的全网日历统计（某日零可用/零约满且多数航线明确返回 -2）。
+     * 汇总畅飞卡全网不可使用日期（status = -2 官方适用窗口外/春运五一暑运国庆屏蔽）：
+     * 结合官方适用日期规则、内置核对日期以及本机实网拉取的全网一致 -2 屏蔽日。
      */
     suspend fun getGlobalUnavailableDates(): Set<String> = withContext(Dispatchers.IO) {
-        val todayStr = ChinaClock.today().toString()
+        val today = ChinaClock.today()
+        val todayStr = today.toString()
         val result = sortedSetOf<String>()
+        result.addAll(RoundTripMatcher.officialBlackoutDates(today))
         readBundledNetworkAsset()?.unavailableDates
             ?.filter { it >= todayStr }
             ?.forEach { result.add(it) }

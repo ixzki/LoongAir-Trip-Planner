@@ -107,6 +107,7 @@ class RouteInvalidatedException(
 data class BundledChangfeiNetwork(
     val version: Int = 0,
     val generatedAt: String = "",
+    val cardEndDate: String = "2027-10-30",
     val unavailableDates: List<String> = emptyList(),
     val airports: List<BundledAirportItem> = emptyList(),
     val routes: List<BundledRouteItem> = emptyList(),
