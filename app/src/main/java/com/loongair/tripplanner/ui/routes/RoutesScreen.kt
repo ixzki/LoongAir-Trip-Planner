@@ -247,7 +247,6 @@ fun RoutesScreen(
                             hubColorMap = hubColorMap,
                             selectedOrigin = state.fromCityFilter,
                             totalCitiesCount = totalCities,
-                            officialSyncedCount = state.officialSyncedCount,
                             onSelectQuickHub = { hub ->
                                 viewModel.setNetworkFilter(fromCity = if (hub == "全部") "" else hub, toCity = "")
                             }
@@ -506,7 +505,6 @@ private fun ChinaRouteMapCard(
     hubColorMap: Map<String, Color>,
     selectedOrigin: String,
     totalCitiesCount: Int,
-    officialSyncedCount: Int,
     onSelectQuickHub: (String) -> Unit
 ) {
     val p = LocalLoongPalette.current
@@ -515,6 +513,7 @@ private fun ChinaRouteMapCard(
     var offsetX by remember { mutableFloatStateOf(0f) }
     var offsetY by remember { mutableFloatStateOf(0f) }
     val scale = scaleAnim.value
+    val isZoomedOrPanned = scale > 1.03f || kotlin.math.abs(offsetX) > 2f || kotlin.math.abs(offsetY) > 2f
 
     val parsedPaths = remember(provinces) {
         provinces.map { parseSvgPathToComposePath(it.path) }
@@ -523,12 +522,41 @@ private fun ChinaRouteMapCard(
     val activeCities = remember(routes) {
         (routes.map { it.fromCity } + routes.map { it.toCity }).toSet()
     }
-    val originCitiesSet = remember(originCities) { originCities.toSet() }
+    val originRankMap = remember(originCities) {
+        originCities.withIndex().associate { (i, c) -> c to i }
+    }
+    val topHubsSet = remember(originCities) { originCities.take(8).toSet() }
+    val topLabelHubsSet = remember(originCities) { originCities.take(14).toSet() }
+
+    // 概览模式下将往返双向重叠航线去重，用轻盈大圆弧线呈现；聚焦枢纽时完整高亮
+    val displayRoutes = remember(routes, selectedOrigin) {
+        if (selectedOrigin.isNotBlank()) {
+            routes
+        } else {
+            val seen = HashSet<String>(routes.size)
+            routes.filter { r ->
+                val key = if (r.fromCity < r.toCity) "${r.fromCity}|${r.toCity}" else "${r.toCity}|${r.fromCity}"
+                seen.add(key)
+            }
+        }
+    }
+    val sortedLabelCities = remember(activeCities, selectedOrigin, originRankMap) {
+        activeCities.sortedWith(
+            compareBy<String>(
+                { it != selectedOrigin },
+                { originRankMap[it] ?: Int.MAX_VALUE },
+                { it }
+            )
+        )
+    }
+
+    val arcPath = remember { Path() }
+    val placedRects = remember { ArrayList<android.graphics.RectF>(32) }
 
     val haloPaint = remember {
         Paint(Paint.ANTI_ALIAS_FLAG).apply {
             style = Paint.Style.STROKE
-            strokeWidth = 3.2f
+            strokeJoin = Paint.Join.ROUND
             color = android.graphics.Color.WHITE
             textAlign = Paint.Align.CENTER
         }
@@ -546,44 +574,22 @@ private fun ChinaRouteMapCard(
             horizontalArrangement = Arrangement.SpaceBetween,
             verticalAlignment = Alignment.CenterVertically
         ) {
-            Column(verticalArrangement = Arrangement.spacedBy(2.dp)) {
-                Text(
-                    "全国随心飞航网",
-                    style = LoongType.headline,
-                    color = p.textPrimary
-                )
-                Text(
-                    "已通航 $totalCitiesCount 城 · 当前 ${routes.size} 条" +
-                        if (officialSyncedCount > 0) "（官方同步 $officialSyncedCount）" else "",
-                    style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
-                    color = p.textSecondary
-                )
-            }
+            Text(
+                "全国随心飞航网",
+                style = LoongType.headline,
+                color = p.textPrimary
+            )
 
-            Row(horizontalArrangement = Arrangement.spacedBy(6.dp)) {
-                SmallMapCtrlBtn(Icons.Default.Add, "放大") {
-                    scope.launch {
-                        scaleAnim.animateTo((scaleAnim.value * 1.35f).coerceAtMost(4.5f), AppMotion.reveal())
-                    }
-                }
-                SmallMapCtrlBtn(Icons.Default.Remove, "缩小") {
-                    scope.launch {
-                        val next = (scaleAnim.value / 1.35f).coerceAtLeast(1f)
-                        if (next <= 1.02f) {
-                            offsetX = 0f
-                            offsetY = 0f
-                        }
-                        scaleAnim.animateTo(next, AppMotion.reveal())
-                    }
-                }
-                SmallMapCtrlBtn(Icons.Default.CenterFocusStrong, "重置") {
-                    offsetX = 0f
-                    offsetY = 0f
-                    scope.launch {
-                        scaleAnim.animateTo(1f, AppMotion.reveal())
-                    }
-                }
-            }
+            TonePillBadge(
+                text = if (selectedOrigin.isBlank()) {
+                    "$totalCitiesCount 城 · ${routes.size} 条"
+                } else {
+                    "${selectedOrigin}出发 · ${routes.size} 条"
+                },
+                backgroundColor = if (selectedOrigin.isBlank()) p.subtleSurface else p.primarySoftBg,
+                contentColor = if (selectedOrigin.isBlank()) p.textSecondary else p.primary,
+                cornerRadius = 9.dp
+            )
         }
 
         Spacer(Modifier.height(10.dp))
@@ -591,9 +597,9 @@ private fun ChinaRouteMapCard(
         Box(
             modifier = Modifier
                 .fillMaxWidth()
-                .aspectRatio(1.24f)
+                .aspectRatio(1.26f)
                 .clip(RoundedCornerShape(16.dp))
-                .background(p.subtleSurface)
+                .background(p.subtleSurface.copy(alpha = 0.72f))
                 .clipToBounds()
                 .pointerInput(Unit) {
                     detectTransformGestures { _, pan, zoom, _ ->
@@ -615,6 +621,7 @@ private fun ChinaRouteMapCard(
                 val baseScale = minOf(size.width / 1000f, size.height / 780f)
                 val dx = (size.width - 1000f * baseScale) / 2f
                 val dy = (size.height - 780f * baseScale) / 2f
+                val isFocused = selectedOrigin.isNotBlank()
 
                 withTransform({
                     translate(left = size.width / 2f + offsetX, top = size.height / 2f + offsetY)
@@ -623,18 +630,18 @@ private fun ChinaRouteMapCard(
                     scale(scaleX = baseScale, scaleY = baseScale, pivot = Offset.Zero)
                 }) {
                     val provinceFill = Color(0xFFFFFFFF)
-                    val provinceStroke = Color(0xFFDCE1EA)
+                    val provinceStroke = Color(0xFFE3DDD9)
                     for (path in parsedPaths) {
                         drawPath(path = path, color = provinceFill)
                         drawPath(
                             path = path,
                             color = provinceStroke,
-                            style = Stroke(width = 1.1f / scale)
+                            style = Stroke(width = 0.95f / scale)
                         )
                     }
 
-                    val isFocused = selectedOrigin.isNotBlank()
-                    for (route in routes) {
+                    // 1. 轻盈贝塞尔航迹弧线（概览柔化降噪，聚焦时流光高亮）
+                    for (route in displayRoutes) {
                         val fromMeta = metaMap[route.fromCity] ?: continue
                         val toMeta = metaMap[route.toCity] ?: continue
                         val x1 = projectX(fromMeta.lng)
@@ -642,70 +649,165 @@ private fun ChinaRouteMapCard(
                         val x2 = projectX(toMeta.lng)
                         val y2 = projectY(toMeta.lat)
 
-                        val baseColor = hubColorMap[route.fromCity] ?: p.primary
-                        val lineAlpha = when {
-                            isFocused -> 0.85f
-                            route.isOfficialSynced -> 0.72f
-                            else -> 0.48f
-                        }
-                        val strokeW = (if (isFocused || route.isOfficialSynced) 1.85f else 1.15f) / scale
+                        val mx = (x1 + x2) / 2f
+                        val my = (y1 + y2) / 2f
+                        val vx = x2 - x1
+                        val vy = y2 - y1
+                        val dist = kotlin.math.hypot(vx, vy)
+                        val bend = (dist * 0.14f).coerceAtMost(44f)
+                        val nx = if (dist > 1f) -vy / dist else 0f
+                        val ny = if (dist > 1f) vx / dist else 0f
+                        val sign = if (ny <= 0f) 1f else -1f
 
-                        drawLine(
-                            color = baseColor.copy(alpha = lineAlpha),
-                            start = Offset(x1, y1),
-                            end = Offset(x2, y2),
-                            strokeWidth = strokeW
-                        )
+                        arcPath.reset()
+                        arcPath.moveTo(x1, y1)
+                        arcPath.quadraticTo(mx + nx * bend * sign, my + ny * bend * sign, x2, y2)
+
+                        val lineColor = when {
+                            isFocused -> hubColorMap[selectedOrigin] ?: p.primary
+                            route.fromCity in topHubsSet -> hubColorMap[route.fromCity] ?: p.primary
+                            else -> hubColorMap[route.toCity] ?: p.primary
+                        }
+                        if (isFocused) {
+                            drawPath(
+                                path = arcPath,
+                                color = lineColor.copy(alpha = 0.16f),
+                                style = Stroke(width = 4.2f / scale, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                            )
+                            drawPath(
+                                path = arcPath,
+                                color = lineColor.copy(alpha = 0.86f),
+                                style = Stroke(width = 1.75f / scale, cap = androidx.compose.ui.graphics.StrokeCap.Round)
+                            )
+                        } else {
+                            val isMajor = route.fromCity in topHubsSet || route.toCity in topHubsSet
+                            drawPath(
+                                path = arcPath,
+                                color = lineColor.copy(alpha = if (isMajor) 0.30f else 0.16f),
+                                style = Stroke(width = (if (isMajor) 1.15f else 0.85f) / scale)
+                            )
+                        }
                     }
 
+                    // 2. 城市节点圆点（区分主枢纽环点与次级航点）
                     for (city in activeCities) {
                         val meta = metaMap[city] ?: continue
                         val cx = projectX(meta.lng)
                         val cy = projectY(meta.lat)
-                        val isHub = city in originCitiesSet || city == selectedOrigin
-                        val dotColor = hubColorMap[city] ?: Color(0xFF334155)
-                        val radius = (if (isHub) 5.2f else 2.8f) / scale
-
-                        drawCircle(color = Color.White, radius = radius + 1.4f / scale, center = Offset(cx, cy))
-                        drawCircle(color = dotColor, radius = radius, center = Offset(cx, cy))
-
-                        val shouldLabel = isHub ||
-                            selectedOrigin.isNotBlank() ||
-                            activeCities.size <= 45 ||
-                            scale >= 1.4f
-
-                        if (shouldLabel) {
-                            val labelSize = (if (isHub) 18f else 12.5f) / scale
-                            val yOffset = if (isHub) -9f / scale else -6f / scale
-
-                            haloPaint.textSize = labelSize
-                            haloPaint.strokeWidth = 3.2f / scale
-                            haloPaint.typeface = if (isHub) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-
-                            textPaint.textSize = labelSize
-                            textPaint.color = (if (isHub) dotColor else Color(0xFF1E293B)).toArgb()
-                            textPaint.typeface = if (isHub) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
-
-                            drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, haloPaint)
-                            drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, textPaint)
+                        val isSelected = city == selectedOrigin
+                        val isMajorHub = city in topHubsSet
+                        val dotColor = when {
+                            isSelected -> hubColorMap[city] ?: p.primary
+                            isMajorHub -> hubColorMap[city] ?: p.primary
+                            isFocused -> (hubColorMap[selectedOrigin] ?: p.primary).copy(alpha = 0.85f)
+                            else -> Color(0xFF64748B)
                         }
+                        val radius = when {
+                            isSelected -> 6.4f / scale
+                            isMajorHub -> 4.3f / scale
+                            isFocused -> 3.4f / scale
+                            else -> 2.1f / scale
+                        }
+
+                        if (isSelected) {
+                            drawCircle(
+                                color = dotColor.copy(alpha = 0.22f),
+                                radius = radius * 2.1f,
+                                center = Offset(cx, cy)
+                            )
+                        }
+                        if (isSelected || isMajorHub || isFocused) {
+                            drawCircle(color = Color.White, radius = radius + 1.5f / scale, center = Offset(cx, cy))
+                        }
+                        drawCircle(color = dotColor, radius = radius, center = Offset(cx, cy))
+                    }
+
+                    // 3. 碰撞避让地名标注（缩放/聚焦自动揭露更多城市，概览零重叠）
+                    placedRects.clear()
+                    for (city in sortedLabelCities) {
+                        val meta = metaMap[city] ?: continue
+                        val isSelected = city == selectedOrigin
+                        val isMajor = city in topLabelHubsSet
+                        val eligible = isSelected || isMajor || scale >= 1.45f || (isFocused && activeCities.size <= 24)
+                        if (!eligible) continue
+
+                        val cx = projectX(meta.lng)
+                        val cy = projectY(meta.lat)
+                        val labelSize = when {
+                            isSelected -> 20f / scale
+                            isMajor -> 15.5f / scale
+                            else -> 12f / scale
+                        }
+                        val yOffset = if (isSelected || isMajor) -9.5f / scale else -6.5f / scale
+
+                        haloPaint.textSize = labelSize
+                        haloPaint.strokeWidth = 3.4f / scale
+                        haloPaint.typeface = if (isSelected || isMajor) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+
+                        textPaint.textSize = labelSize
+                        textPaint.typeface = if (isSelected || isMajor) Typeface.DEFAULT_BOLD else Typeface.DEFAULT
+                        textPaint.color = when {
+                            isSelected || isMajor -> (hubColorMap[city] ?: p.primary).toArgb()
+                            else -> Color(0xFF334155).toArgb()
+                        }
+
+                        val w = textPaint.measureText(city)
+                        val pad = 5f / scale
+                        val rect = android.graphics.RectF(
+                            cx - w / 2f - pad,
+                            cy + yOffset - labelSize,
+                            cx + w / 2f + pad,
+                            cy + yOffset + 2f / scale
+                        )
+                        if (!isSelected && placedRects.any { android.graphics.RectF.intersects(it, rect) }) {
+                            continue
+                        }
+                        placedRects.add(rect)
+                        drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, haloPaint)
+                        drawContext.canvas.nativeCanvas.drawText(city, cx, cy + yOffset, textPaint)
                     }
                 }
             }
 
+            // 悬浮于地图右上角的紧凑缩放胶囊条
             Surface(
-                color = Color.White.copy(alpha = 0.90f),
-                shape = RoundedCornerShape(AppRadii.xs),
+                shape = RoundedCornerShape(12.dp),
+                color = Color.White.copy(alpha = 0.92f),
+                border = androidx.compose.foundation.BorderStroke(0.6.dp, p.border),
+                shadowElevation = 2.dp,
                 modifier = Modifier
-                    .align(Alignment.BottomStart)
+                    .align(Alignment.TopEnd)
                     .padding(8.dp)
             ) {
-                Text(
-                    "双指/按钮缩放 · 拖拽漫游 · 点击下方枢纽聚焦",
-                    style = LoongType.caption.copy(fontSize = 11.sp, fontWeight = FontWeight.Medium),
-                    color = p.textSecondary,
-                    modifier = Modifier.padding(horizontal = 8.dp, vertical = 3.dp)
-                )
+                Row(
+                    verticalAlignment = Alignment.CenterVertically,
+                    modifier = Modifier.padding(horizontal = 2.dp, vertical = 2.dp)
+                ) {
+                    SmallMapCtrlBtn(Icons.Default.Add, "放大") {
+                        scope.launch {
+                            scaleAnim.animateTo((scaleAnim.value * 1.4f).coerceAtMost(4.5f), AppMotion.reveal())
+                        }
+                    }
+                    SmallMapCtrlBtn(Icons.Default.Remove, "缩小") {
+                        scope.launch {
+                            val next = (scaleAnim.value / 1.4f).coerceAtLeast(1f)
+                            if (next <= 1.02f) {
+                                offsetX = 0f
+                                offsetY = 0f
+                            }
+                            scaleAnim.animateTo(next, AppMotion.reveal())
+                        }
+                    }
+                    if (isZoomedOrPanned) {
+                        SmallMapCtrlBtn(Icons.Default.CenterFocusStrong, "重置") {
+                            offsetX = 0f
+                            offsetY = 0f
+                            scope.launch {
+                                scaleAnim.animateTo(1f, AppMotion.reveal())
+                            }
+                        }
+                    }
+                }
             }
         }
 
@@ -739,14 +841,14 @@ private fun ChinaRouteMapCard(
                             )
                             .clip(RoundedCornerShape(AppRadii.sm))
                             .background(pillBg)
-                            .padding(horizontal = 11.dp, vertical = 7.dp),
+                            .padding(horizontal = 11.dp, vertical = 6.dp),
                         verticalAlignment = Alignment.CenterVertically,
                         horizontalArrangement = Arrangement.spacedBy(5.dp)
                     ) {
                         hubColorMap[hub]?.let { c ->
                             Box(
                                 modifier = Modifier
-                                    .size(7.dp)
+                                    .size(6.dp)
                                     .clip(CircleShape)
                                     .background(c)
                             )
@@ -772,13 +874,12 @@ private fun SmallMapCtrlBtn(
     val p = LocalLoongPalette.current
     Box(
         modifier = Modifier
-            .size(32.dp)
+            .size(28.dp)
             .pressScale(scaleDown = AppPressScale.ICON, haptic = true, onClick = onClick)
-            .clip(RoundedCornerShape(10.dp))
-            .background(p.primarySoftBg),
+            .clip(RoundedCornerShape(9.dp)),
         contentAlignment = Alignment.Center
     ) {
-        Icon(icon, contentDescription = desc, modifier = Modifier.size(17.dp), tint = p.primary)
+        Icon(icon, contentDescription = desc, modifier = Modifier.size(16.dp), tint = p.textPrimary)
     }
 }
 
