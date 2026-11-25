@@ -49,7 +49,10 @@ import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableIntStateOf
+import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.saveable.rememberSaveable
+import androidx.compose.runtime.setValue
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
@@ -65,6 +68,7 @@ import androidx.core.view.WindowCompat
 import com.loongair.tripplanner.alarm.NotificationHelper
 import com.loongair.tripplanner.ui.MainViewModel
 import com.loongair.tripplanner.ui.account.AccountScreen
+import com.loongair.tripplanner.ui.components.FullScreenLaunchSplash
 import com.loongair.tripplanner.ui.components.chhersShadow
 import com.loongair.tripplanner.ui.plans.PlansScreen
 import com.loongair.tripplanner.ui.routes.RoutesScreen
@@ -92,20 +96,31 @@ class MainActivity : ComponentActivity() {
         handleIncomingIntent(intent)
         setContent {
             val session by viewModel.sessionState.collectAsStateWithLifecycle()
+            val networkState by viewModel.networkState.collectAsStateWithLifecycle()
             val themeStyle = AppThemeStyle.fromKey(session.themeStyle)
+            var showSplash by rememberSaveable { mutableStateOf(true) }
 
             LoongAirTheme(themeStyle = themeStyle) {
                 val palette = LocalLoongPalette.current
                 SideEffect {
                     val controller = WindowCompat.getInsetsController(window, window.decorView)
-                    controller.isAppearanceLightStatusBars = palette.lightStatusBarIcons
-                    controller.isAppearanceLightNavigationBars = true
+                    val isCrimsonSplash = showSplash && themeStyle == AppThemeStyle.CRIMSON
+                    controller.isAppearanceLightStatusBars = if (isCrimsonSplash) false else palette.lightStatusBarIcons
+                    controller.isAppearanceLightNavigationBars = !isCrimsonSplash
                 }
-                MainScaffold(
-                    viewModel = viewModel,
-                    selectedTab = selectedTabState.intValue,
-                    onSelectTab = { selectedTabState.intValue = it }
-                )
+                Box(modifier = Modifier.fillMaxSize()) {
+                    MainScaffold(
+                        viewModel = viewModel,
+                        selectedTab = selectedTabState.intValue,
+                        onSelectTab = { selectedTabState.intValue = it }
+                    )
+                    if (showSplash) {
+                        FullScreenLaunchSplash(
+                            isDataReady = !networkState.isLoading,
+                            onDismissed = { showSplash = false }
+                        )
+                    }
+                }
             }
         }
     }

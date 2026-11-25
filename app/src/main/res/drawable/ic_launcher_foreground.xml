@@ -3,13 +3,30 @@
     android:height="108dp"
     android:viewportWidth="108"
     android:viewportHeight="108">
+
+    <!-- 柔和中心光泽，增强徽章立体感 -->
     <path
-        android:fillColor="#FFFFFF"
-        android:pathData="M78,34 L63,49 L69,73 L63,79 L53,58 L41,70 L43,79 L38,83 L33,73 L23,68 L27,63 L36,65 L48,53 L27,43 L33,37 L57,43 L72,28 C74,26 78,26 79,28 C81,30 80,32 78,34 Z" />
+        android:fillColor="#18FFF8F5"
+        android:pathData="M54,23 A31,31 0 1,1 53.99,23 Z" />
+
+    <!-- 航迹弧线（左下起点向东北爬升） -->
     <path
-        android:fillColor="#38BDF8"
-        android:pathData="M76,66 A10,10 0 1,0 76,86 A10,10 0 1,0 76,66 Z" />
+        android:fillColor="#00000000"
+        android:pathData="M31,73 Q40,51 60,44"
+        android:strokeColor="#F9E2DA"
+        android:strokeLineCap="round"
+        android:strokeWidth="3.2" />
+
+    <!-- 航迹起点坐标圆点 -->
     <path
-        android:fillColor="#0E4A8A"
-        android:pathData="M75,70 L77,70 L77,76 L81,78 L80,80 L75,77 Z" />
+        android:fillColor="#F9E2DA"
+        android:pathData="M31,69.5 A3.5,3.5 0 1,1 30.99,69.5 Z" />
+    <path
+        android:fillColor="#FFF8F5"
+        android:pathData="M31,71.2 A1.8,1.8 0 1,1 30.99,71.2 Z" />
+
+    <!-- 爬升客机主剪影（暖宣纸白，居中安全区内） -->
+    <path
+        android:fillColor="#FFF8F5"
+        android:pathData="M77.5,31.5 C79,33 78.6,35.4 76.6,37.4 L63.5,50.5 L68.8,71.5 L63.5,76.8 L54.2,58.8 L43.4,69.6 L45.2,76.8 L41.2,80.8 L36.6,72.2 L28,67.6 L32,63.6 L39.2,65.4 L50,54.6 L32,45.3 L37.3,40 L58.3,45.3 L71.4,32.2 C73.4,30.2 76,30 77.5,31.5 Z" />
 </vector>
