@@ -65,6 +65,7 @@ import androidx.compose.material3.Text
 import androidx.compose.material3.TextButton
 import androidx.compose.material3.rememberDatePickerState
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
@@ -105,7 +106,7 @@ import com.loongair.tripplanner.ui.theme.LoongType
 import com.loongair.tripplanner.ui.theme.bounceOnTouch
 import com.loongair.tripplanner.ui.theme.pressHighlight
 import com.loongair.tripplanner.ui.theme.pressScale
-import com.loongair.tripplanner.util.rememberChinaToday
+import com.loongair.tripplanner.util.rememberChinaDateTime
 import java.time.Instant
 import java.time.LocalDate
 import java.time.ZoneId
@@ -161,7 +162,10 @@ fun SearchScreen(
     var expandedDest by remember { mutableStateOf<String?>(null) }
     var savePlanDraft by remember { mutableStateOf<Triple<RoundTripCandidate, FlightCandidate, FlightCandidate>?>(null) }
 
-    val today = rememberChinaToday()
+    val now = rememberChinaDateTime()
+    val today = now.toLocalDate()
+    val cutoffPassed = RoundTripMatcher.isRedemptionClosed(today.plusDays(3), now)
+    LaunchedEffect(today, cutoffPassed) { viewModel.runSearch() }
     val daysUntilOut = ChronoUnit.DAYS.between(today, state.outboundDate)
 
     LacquerPullRefreshBox(
@@ -416,7 +420,8 @@ fun SearchScreen(
                             val (badgeText, badgeBg, badgeFg) = when {
                                 isGlobalBlocked -> Triple("含官方屏蔽不可用日", p.dangerBg, p.danger)
                                 daysUntilOut < 0 -> Triple("出发日已过期·不可兑", p.dangerBg, p.danger)
-                                daysUntilOut < 3 -> Triple("距出发${daysUntilOut}天·不足3天不可兑", p.dangerBg, p.danger)
+                                RoundTripMatcher.isRedemptionClosed(state.outboundDate, now) ->
+                                    Triple("距出发${daysUntilOut}天·兑换已截止", p.dangerBg, p.danger)
                                 daysUntilOut <= 30 -> Triple("距出发${daysUntilOut}天·可兑窗口", p.successBg, p.success)
                                 else -> Triple("距开抢约${daysUntilOut - 30}天·适合定闹钟", p.warningBg, p.warning)
                             }

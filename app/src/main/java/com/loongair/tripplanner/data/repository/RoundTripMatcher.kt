@@ -10,7 +10,7 @@ import com.loongair.tripplanner.data.remote.FlightNoDecoder
 import com.loongair.tripplanner.data.remote.LiveFlightSeat
 import com.loongair.tripplanner.util.ChinaClock
 import java.time.DayOfWeek
-import java.time.Duration
+import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.LocalTime
@@ -81,6 +81,13 @@ data class ReminderSuggestion(
     val message: String,
     val isInPast: Boolean
 )
+
+internal class RouteCalendarWindow(val days: Map<String, Int>) {
+    val availableDaysCount = days.values.count { it == 1 }
+    val nearestAvailableDate = days.entries.firstOrNull { it.value == 1 }?.key
+    val soldOutDaysCount = days.values.count { it == 0 }
+    val hasOperatingDays = days.values.any { it == 1 || it == 0 || it == -1 || it == -3 }
+}
 
 object RoundTripMatcher {
 
@@ -177,16 +184,15 @@ object RoundTripMatcher {
     }
 
     /**
-     * 将周一至周日逐日采样得到的实时航班按航班号聚合并算出每个航班的精确执飞星期串（如 "1357" / "246" / "1234567"）
+     * 按航班号和起降时刻聚合星期；保留同一航班号在不同星期的调时班次。
      */
     fun aggregateWeeklyFlightSchedules(
         flightsByDow: Map<Int, List<LiveFlightSeat>>
     ): List<Pair<LiveFlightSeat, String>> {
-        val byKey = linkedMapOf<String, Pair<LiveFlightSeat, MutableSet<Int>>>()
+        val byKey = linkedMapOf<Triple<String, String, String>, Pair<LiveFlightSeat, MutableSet<Int>>>()
         for ((dow, seats) in flightsByDow) {
-            val deduped = seats.distinctBy { "${it.flightNo}|${it.depTime}" }
-            for (seat in deduped) {
-                val key = seat.flightNo.ifBlank { seat.depTime }
+            for (seat in seats) {
+                val key = Triple(normalizedFlightNo(seat.flightNo), seat.depTime, seat.arrTime)
                 val existing = byKey[key]
                 if (existing == null) {
                     byKey[key] = seat to sortedSetOf(dow)
@@ -434,14 +440,42 @@ object RoundTripMatcher {
     fun normalizeCalendarStatus(
         rawStatus: Int?,
         date: LocalDate,
-        today: LocalDate = ChinaClock.today(),
+        today: LocalDate,
+        globalUnavailableDates: Set<String> = emptySet()
+    ): Int? = normalizeCalendarStatus(rawStatus, date, today.atStartOfDay(), globalUnavailableDates)
+
+    fun isRedemptionClosed(flightDate: LocalDate, now: LocalDateTime = ChinaClock.nowDateTime()): Boolean =
+        !now.isBefore(flightDate.minusDays(3).atTime(23, 40))
+
+    internal fun calendarWindow(
+        calendar: Map<String, Int>,
+        now: LocalDateTime,
+        globalUnavailableDates: Set<String>
+    ): RouteCalendarWindow {
+        val today = now.toLocalDate()
+        val days = buildMap {
+            for (offset in 0L until 40L) {
+                val date = today.plusDays(offset)
+                val key = date.toString()
+                val raw = calendar[key] ?: continue
+                val status = normalizeCalendarStatus(raw, date, now, globalUnavailableDates) ?: continue
+                put(key, status)
+            }
+        }
+        return RouteCalendarWindow(days)
+    }
+
+    fun normalizeCalendarStatus(
+        rawStatus: Int?,
+        date: LocalDate,
+        now: LocalDateTime = ChinaClock.nowDateTime(),
         globalUnavailableDates: Set<String> = emptySet()
     ): Int? {
         if (rawStatus == -4) return -4
         val isBlackout = !isWithinOfficialChangfeiDates(date) || date.toString() in globalUnavailableDates
         if (isBlackout && rawStatus != 1 && rawStatus != 0) return -2
         if (rawStatus == -2) return -2
-        if (date.isBefore(today.plusDays(3))) return -3
+        if (isRedemptionClosed(date, now)) return -3
         return rawStatus
     }
 
@@ -456,42 +490,29 @@ object RoundTripMatcher {
         inboundCalendars: Map<String, CalendarCacheEntity>,
         seatOverlay: Map<String, List<SeatSnapshotEntity>>,
         cityMetaMap: Map<String, CityMeta>,
-        today: LocalDate = ChinaClock.today(),
-        globalUnavailableDates: Set<String> = emptySet()
+        today: LocalDate? = null,
+        globalUnavailableDates: Set<String> = emptySet(),
+        now: LocalDateTime = today?.atStartOfDay() ?: ChinaClock.nowDateTime()
     ): List<RoundTripCandidate> {
-        val outByDest = allOutboundRoutes
-            .filter { r ->
-                (query.destinationFilter.isBlank() || r.toCity == query.destinationFilter) &&
-                    matchesDayOfWeek(r.frequency, query.outboundDate) &&
-                    isInTimeWindow(r.depTime, query.outStartMinute, query.outEndMinute) &&
-                    (!query.directOnly || r.stopover.isBlank() || r.stopover == "直飞")
-            }
-            .groupBy { it.toCity }
-
-        val inByOrigin = allInboundRoutes
-            .filter { r ->
-                (query.destinationFilter.isBlank() || r.fromCity == query.destinationFilter) &&
-                    matchesDayOfWeek(r.frequency, query.returnDate) &&
-                    isInTimeWindow(r.depTime, query.retStartMinute, query.retEndMinute) &&
-                    (!query.directOnly || r.stopover.isBlank() || r.stopover == "直飞")
-            }
-            .groupBy { it.fromCity }
+        val outByDest = allOutboundRoutes.groupBy { it.toCity }
+        val inByOrigin = allInboundRoutes.groupBy { it.fromCity }
 
         val commonDestinations = outByDest.keys.intersect(inByOrigin.keys)
         val outDateStr = query.outboundDate.toString()
         val retDateStr = query.returnDate.toString()
 
         val candidates = commonDestinations.mapNotNull { dest ->
+            if (query.destinationFilter.isNotBlank() && dest != query.destinationFilter) return@mapNotNull null
             val outCal = normalizeCalendarStatus(
                 outboundCalendars[dest]?.status,
                 query.outboundDate,
-                today,
+                now,
                 globalUnavailableDates
             )
             val retCal = normalizeCalendarStatus(
                 inboundCalendars[dest]?.status,
                 query.returnDate,
-                today,
+                now,
                 globalUnavailableDates
             )
             if (query.onlyCalendarAvailable && !(outCal == 1 && retCal == 1)) {
@@ -501,18 +522,23 @@ object RoundTripMatcher {
             val outSeats = seatOverlay["${query.originCity}|$dest|$outDateStr"].orEmpty()
             val retSeats = seatOverlay["$dest|${query.originCity}|$retDateStr"].orEmpty()
 
-            val outCandidates = mergeWithLiveSeats(outByDest[dest].orEmpty(), outSeats)
-            val retCandidates = mergeWithLiveSeats(inByOrigin[dest].orEmpty(), retSeats)
+            val outCandidates = matchingFlights(outByDest.getValue(dest), outSeats, query.outboundDate,
+                query.outStartMinute, query.outEndMinute, query.directOnly)
+            val retCandidates = matchingFlights(inByOrigin.getValue(dest), retSeats, query.returnDate,
+                query.retStartMinute, query.retEndMinute, query.directOnly)
 
-            if (outCandidates.isEmpty() || retCandidates.isEmpty()) return@mapNotNull null
-
-            val stayHours = estimateMaxStayHours(
-                query.outboundDate,
-                outCandidates.first(),
-                query.returnDate,
-                retCandidates.last()
-            )
-            if (stayHours < 0) return@mapNotNull null
+            val outbound = linkedSetOf<FlightCandidate>()
+            val returning = mutableSetOf<FlightCandidate>()
+            var longestStay = 0L
+            for (out in outCandidates) {
+                for (ret in retCandidates) {
+                    val minutes = stayMinutes(query.outboundDate, out, query.returnDate, ret) ?: continue
+                    outbound.add(out)
+                    returning.add(ret)
+                    longestStay = maxOf(longestStay, minutes)
+                }
+            }
+            if (outbound.isEmpty()) return@mapNotNull null
 
             RoundTripCandidate(
                 originCity = query.originCity,
@@ -520,11 +546,11 @@ object RoundTripMatcher {
                 cityMeta = cityMetaMap[dest],
                 outboundDate = query.outboundDate,
                 returnDate = query.returnDate,
-                outboundFlights = outCandidates,
-                returnFlights = retCandidates,
+                outboundFlights = outbound.toList(),
+                returnFlights = retCandidates.filter { it in returning },
                 outCalendarStatus = outCal,
                 retCalendarStatus = retCal,
-                maxStayHours = stayHours
+                maxStayHours = longestStay / 60
             )
         }
 
@@ -595,13 +621,14 @@ object RoundTripMatcher {
         targetDepTime: String
     ): Int? {
         if (seats.isEmpty()) return null
-        val normTargetNo = FlightNoDecoder.decode(targetFlightNo) ?: targetFlightNo.trim().uppercase()
-        val byNo = seats.filter {
-            val normSeatNo = FlightNoDecoder.decode(it.flightNo) ?: it.flightNo.trim().uppercase()
-            normSeatNo.isNotBlank() && normSeatNo == normTargetNo
-        }
-        val matched = byNo.ifEmpty {
-            seats.filter { it.depTime == targetDepTime }
+        val targetNo = normalizedFlightNo(targetFlightNo)
+        val matched = if (targetNo.isNotEmpty()) {
+            val byNo = seats.filter { normalizedFlightNo(it.flightNo) == targetNo }
+            val exactTime = byNo.filter { it.depTime == targetDepTime }
+            exactTime.ifEmpty { byNo.takeIf { rows -> rows.distinctBy { it.depTime }.size == 1 }.orEmpty() }
+        } else {
+            val byTime = seats.filter { it.depTime == targetDepTime }
+            byTime.takeIf { rows -> rows.map { normalizedFlightNo(it.flightNo) }.distinct().size == 1 }.orEmpty()
         }
         if (matched.isEmpty()) return null
         return matched.groupBy { it.cabinCode.ifBlank { "M" } }
@@ -609,51 +636,85 @@ object RoundTripMatcher {
             .sumOf { group -> group.maxOf { it.secCardLeft } }
     }
 
+    private fun normalizedFlightNo(raw: String): String =
+        FlightNoDecoder.decode(raw) ?: raw.trim().uppercase()
+
+    private fun matchingFlights(
+        routes: List<FlightRouteEntity>,
+        snapshots: List<SeatSnapshotEntity>,
+        date: LocalDate,
+        start: Int,
+        end: Int,
+        directOnly: Boolean
+    ): List<FlightCandidate> = mergeWithLiveSeats(routes, snapshots).filter { f ->
+        (f.liveQueriedAt != null || matchesDayOfWeek(f.frequency, date)) &&
+            isInTimeWindow(f.depTime, start, end) && (!directOnly || f.isDirect)
+    }
+
     internal fun mergeWithLiveSeats(
         routes: List<FlightRouteEntity>,
         snapshots: List<SeatSnapshotEntity>
     ): List<FlightCandidate> {
         val aggregated = aggregateFlightSnapshots(snapshots)
-        val snapByNo = aggregated.associateBy { it.cleanFlightNo }
-        val snapByDep = aggregated.associateBy { it.depTime }
-        return routes.sortedBy { it.depTime }.map { r ->
-            val cleanRouteNo = FlightNoDecoder.decode(r.flightNo) ?: r.flightNo
-            val snap = snapByNo[cleanRouteNo] ?: snapByDep[r.depTime]
+        val routesByNo = routes.groupBy { normalizedFlightNo(it.flightNo) }
+        val observedNos = aggregated.map { normalizedFlightNo(it.cleanFlightNo) }.filter { it.isNotBlank() }.toSet()
+        val baseline = routes.filter { normalizedFlightNo(it.flightNo) !in observedNos }.map { r ->
             FlightCandidate(
-                flightNo = cleanRouteNo,
+                flightNo = normalizedFlightNo(r.flightNo),
                 depTime = r.depTime,
                 arrTime = r.arrTime,
                 duration = r.duration,
-                aircraft = snap?.aircraft?.ifBlank { r.aircraft } ?: r.aircraft,
-                stopover = snap?.stopover?.ifBlank { r.stopover } ?: r.stopover,
-                frequency = r.frequency,
-                liveSecCardLeft = snap?.secCardLeft,
-                liveNormalLeft = snap?.normalLeft,
-                liveRedeemPrice = snap?.minRedeemPrice,
-                liveQueriedAt = snap?.queriedAt
+                aircraft = r.aircraft,
+                stopover = r.stopover,
+                frequency = r.frequency
             )
         }
+        val observed = aggregated.map { snap ->
+            val number = normalizedFlightNo(snap.cleanFlightNo)
+            val known = routesByNo[number].orEmpty()
+            val r = known.firstOrNull { it.depTime == snap.depTime } ?: known.singleOrNull()
+            val elapsed = flightElapsedMinutes(snap.depTime, snap.arrTime)
+            FlightCandidate(
+                flightNo = number,
+                depTime = snap.depTime,
+                arrTime = snap.arrTime,
+                duration = elapsed?.let { "${it / 60}h${it % 60}m" }.orEmpty(),
+                aircraft = snap.aircraft.ifBlank { r?.aircraft.orEmpty() },
+                stopover = snap.stopover.ifBlank { r?.stopover.orEmpty() },
+                frequency = r?.frequency.orEmpty(),
+                liveSecCardLeft = snap.secCardLeft,
+                liveNormalLeft = snap.normalLeft,
+                liveRedeemPrice = snap.minRedeemPrice,
+                liveQueriedAt = snap.queriedAt
+            )
+        }
+        return (baseline + observed).sortedBy { it.depTime }
     }
 
-    private fun estimateMaxStayHours(
-        outDate: LocalDate,
-        earliestOut: FlightCandidate,
-        retDate: LocalDate,
-        latestRet: FlightCandidate
-    ): Long {
-        val outArrMin = parseMinutes(earliestOut.arrTime) ?: parseMinutes(earliestOut.depTime) ?: 0
-        val plusDay = if (earliestOut.arrTime.contains("+1")) 1L else 0L
-        val outArrDt = LocalDateTime.of(
-            outDate.plusDays(plusDay),
-            LocalTime.of(outArrMin / 60, outArrMin % 60)
-        )
-        val retDepMin = parseMinutes(latestRet.depTime) ?: 0
-        val retDepDt = LocalDateTime.of(
-            retDate,
-            LocalTime.of(retDepMin / 60, retDepMin % 60)
-        )
-        return Duration.between(outArrDt, retDepDt).toHours()
+    private fun arrivalMinute(arrTime: String): Int? =
+        parseMinutes(arrTime)?.let { it + if (arrTime.trim().endsWith("+1")) 1440 else 0 }
+
+    private fun flightElapsedMinutes(depTime: String, arrTime: String): Int? {
+        val dep = parseMinutes(depTime) ?: return null
+        val arr = arrivalMinute(arrTime) ?: return null
+        return (arr - dep).takeIf { it > 0 }
     }
+
+    fun stayMinutes(
+        outDate: LocalDate,
+        outFlight: FlightCandidate,
+        retDate: LocalDate,
+        retFlight: FlightCandidate
+    ): Long? {
+        val arrival = arrivalMinute(outFlight.arrTime) ?: return null
+        val returning = parseMinutes(retFlight.depTime) ?: return null
+        val days = retDate.toEpochDay() - outDate.toEpochDay()
+        return (days * 1440 + returning - arrival).takeIf { it > 0 }
+    }
+
+    fun isFeasibleFlightPair(
+        outDate: LocalDate, outFlight: FlightCandidate, retDate: LocalDate, retFlight: FlightCandidate
+    ): Boolean = stayMinutes(outDate, outFlight, retDate, retFlight) != null
 
     /**
      * 为行程计划生成智能抢票提醒时间建议（结合长龙畅飞卡提前30天10:00放票、提前3天截止规则）
@@ -717,14 +778,20 @@ object RoundTripMatcher {
         )
 
         // 4. 次日早 09:55 刷回流票提醒
-        val tomorrowMorning = toMillis(LocalDate.now(zoneId).plusDays(1), 9, 55)
+        val tomorrow = Instant.ofEpochMilli(nowMillis).atZone(zoneId).toLocalDate().plusDays(1)
+        val reminderTime = tomorrow.atTime(9, 55)
+        val openLegs = listOf("去程" to outDate, "返程" to retDate).filterNot { (_, date) ->
+            isRedemptionClosed(date, reminderTime)
+        }
+        if (openLegs.isEmpty()) return list
+        val tomorrowMorning = reminderTime.atZone(zoneId).toInstant().toEpochMilli()
         list.add(
             ReminderSuggestion(
                 label = "明早09:55刷余票",
-                description = "${LocalDate.now(zoneId).plusDays(1)} 09:55（适合蹲临时退改回流票）",
+                description = "$tomorrow 09:55（适合蹲临时退改回流票）",
                 triggerAtMillis = tomorrowMorning,
                 title = "刷畅飞卡余票：$routeTitle",
-                message = "点击查看 ${plan.outboundDate} 去 / ${plan.returnDate} 回 最新畅飞卡余票情况。",
+                message = "查看${openLegs.joinToString("、") { (leg, date) -> "$date $leg" }}的畅飞卡余票。",
                 isInPast = tomorrowMorning <= nowMillis
             )
         )

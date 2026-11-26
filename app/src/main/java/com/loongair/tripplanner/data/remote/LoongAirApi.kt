@@ -32,9 +32,9 @@ import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.RequestBody.Companion.toRequestBody
 import java.net.URLEncoder
+import java.time.LocalDate
 import java.util.concurrent.ConcurrentHashMap
 import java.util.concurrent.TimeUnit
-import kotlin.math.abs
 
 /**
  * 长龙航空官方网关客户端（参考 eureka-wu/clairline MIT 协议封装）
@@ -42,16 +42,15 @@ import kotlin.math.abs
  */
 class LoongAirApi(
     private val authPrefs: AuthPrefs,
-    private val rateLimiter: ApiRateLimiter = ApiRateLimiter()
-) {
-    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
-
-    private val httpClient = OkHttpClient.Builder()
+    private val rateLimiter: ApiRateLimiter = ApiRateLimiter(),
+    private val httpClient: OkHttpClient = OkHttpClient.Builder()
         .connectTimeout(12, TimeUnit.SECONDS)
         .readTimeout(15, TimeUnit.SECONDS)
         .writeTimeout(12, TimeUnit.SECONDS)
         .callTimeout(25, TimeUnit.SECONDS)
         .build()
+) {
+    private val json = Json { ignoreUnknownKeys = true; isLenient = true }
 
     private val pendingVerifyIds = ConcurrentHashMap<String, String>()
     private val refreshMutex = Mutex()
@@ -139,7 +138,9 @@ class LoongAirApi(
                 val root = runCatching { json.parseToJsonElement(respText).jsonObject }.getOrNull()
                     ?: return@use GatewayResponse(resp.code, -1, "接口返回非 JSON 数据", null, cookieSess)
                 val errCode = root["ErrorCode"]?.jsonPrimitive?.intOrNull ?: -1
-                val msg = root["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val message = root["message"]?.jsonPrimitive?.contentOrNull.orEmpty()
+                val grant = (params["scgTid"] ?: params["secCardGrantTid"])?.primitiveStringOrNull().orEmpty()
+                val msg = if (grant.isEmpty()) message else message.replace(grant, UserSessionState.maskGrantId(grant))
                 val resultElem = parseResultField(root["Result"])
                 GatewayResponse(resp.code, errCode, msg, resultElem, cookieSess)
             }
@@ -168,26 +169,27 @@ class LoongAirApi(
     private suspend fun callAuthenticated(
         method: String,
         params: JsonObject,
-        allowRetryRefresh: Boolean = true
+        allowRetryRefresh: Boolean = true,
+        generation: Long
     ): JsonElement {
         val session = authPrefs.current()
-        if (!session.isLoggedIn || session.sessionToken.isBlank()) {
+        if (!session.isLoggedIn || session.sessionToken.isBlank() || session.sessionGeneration != generation) {
             throw SessionExpiredException("请先在「我的」页面登录长龙会员后再查询实时余票")
         }
         val usedToken = session.sessionToken
         val resp = callGateway(method, params, usedToken)
+        if (authPrefs.current().sessionGeneration != generation) throw SessionExpiredException("账号已切换，请重新查询")
         if ((resp.httpCode == 403 || resp.errorCode == 100001) && allowRetryRefresh) {
-            if (tryRefreshSession(failedToken = usedToken)) {
-                return callAuthenticated(method, params, allowRetryRefresh = false)
+            if (tryRefreshSession(session)) {
+                return callAuthenticated(method, params, allowRetryRefresh = false, generation = generation)
             }
             throw SessionExpiredException("长龙会员会话已过期，请在「我的」页重新验证码登录")
         }
         if (resp.errorCode != 0) {
             val baseMsg = resp.message.ifBlank { "长龙接口返回错误 (${resp.errorCode})" }
             if (baseMsg.contains("次卡") || baseMsg.contains("此卡") || baseMsg.contains("scgTid", ignoreCase = true)) {
-                val tid = session.secCardGrantTid.ifBlank { "空" }
                 throw IllegalStateException(
-                    "$baseMsg（当前卡ID: $tid，请到「我的」点击「重新同步卡包」切换你的畅飞卡或查看卡包诊断）"
+                    "$baseMsg（请到「我的」重新同步卡包或查看诊断）"
                 )
             }
             throw IllegalStateException(baseMsg)
@@ -196,9 +198,10 @@ class LoongAirApi(
         authPrefs.touchSessionActivity(
             usedToken = usedToken,
             rotatedSession = resp.setCookieSession,
-            updatedAt = nowFormatted()
+            updatedAt = nowFormatted(),
+            expectedGeneration = generation
         )
-        return resp.resultElement ?: buildJsonObject { }
+        return resp.resultElement ?: JsonNull
     }
 
     suspend fun sendSmsCode(mobile: String, yidunValidate: String): SmsSendResult {
@@ -248,6 +251,7 @@ class LoongAirApi(
     }
 
     suspend fun loginBySmsCode(mobile: String, smsCode: String, verifyId: String): LoginResult {
+        val generation = authPrefs.current().sessionGeneration
         val m = mobile.trim()
         val c = smsCode.trim()
         if (!Regex("^1[3-9]\\d{9}$").matches(m) || c.length < 4) {
@@ -292,7 +296,8 @@ class LoongAirApi(
                 refreshToken = refreshToken,
                 fallbackMobile = m,
                 fallbackEncUid = encUidFromLogin,
-                manualScgTid = ""
+                manualScgTid = "",
+                expectedGeneration = generation
             )
         } catch (c: CancellationException) {
             throw c
@@ -302,6 +307,7 @@ class LoongAirApi(
     }
 
     suspend fun importManualCredentials(sessionToken: String, manualScgTid: String = ""): LoginResult {
+        val generation = authPrefs.current().sessionGeneration
         val cleanToken = sessionToken.removePrefix("SESSION=").trim()
         if (cleanToken.length < 10) {
             return LoginResult(false, message = "请输入有效的 SESSION 凭证")
@@ -310,9 +316,10 @@ class LoongAirApi(
             syncAndPersistProfile(
                 sessionToken = cleanToken,
                 refreshToken = "",
-                fallbackMobile = authPrefs.current().mobile,
-                fallbackEncUid = authPrefs.current().encryptedUserId,
-                manualScgTid = manualScgTid.trim()
+                fallbackMobile = "",
+                fallbackEncUid = "",
+                manualScgTid = manualScgTid.trim(),
+                expectedGeneration = generation
             )
         } catch (c: CancellationException) {
             throw c
@@ -331,8 +338,10 @@ class LoongAirApi(
         }
         var token = session.sessionToken
         var probe = discoverUnionCards(token)
-        if (probe.authExpired && tryRefreshSession(failedToken = token)) {
-            token = authPrefs.current().sessionToken
+        if (probe.authExpired && tryRefreshSession(session)) {
+            val refreshed = authPrefs.current()
+            if (refreshed.sessionGeneration != session.sessionGeneration) return CardSyncResult(false, "账号已切换，请重新同步")
+            token = refreshed.sessionToken
             probe = discoverUnionCards(token)
         }
         if (probe.authExpired) {
@@ -341,16 +350,18 @@ class LoongAirApi(
         val best = pickBestCard(probe.cards, currentTid = session.secCardGrantTid)
         val finalTid = best?.grantTid ?: session.secCardGrantTid
         val finalName = best?.cardName ?: session.cardName
-        authPrefs.updateCards(
+        val saved = authPrefs.updateCards(
+            expectedSession = session,
             cards = probe.cards,
             selectedTid = finalTid,
             selectedName = finalName,
             diagnostic = probe.diagnostic,
             updatedAt = nowFormatted()
         )
+        if (!saved) return CardSyncResult(false, "账号或畅飞卡已切换，请重新同步")
         val msg = when {
             probe.cards.isEmpty() -> "未在卡包中检测到可用畅飞卡/次卡，请点「查看卡包诊断」排查字段结构"
-            best != null -> "同步成功！检测到 ${probe.cards.size} 张卡，当前选用：${best.cardName} (${best.idField}=${best.grantTid})"
+            best != null -> "同步成功！检测到 ${probe.cards.size} 张卡，当前选用：${best.cardName}"
             else -> "同步完成，共检测到 ${probe.cards.size} 张卡"
         }
         return CardSyncResult(
@@ -461,6 +472,9 @@ class LoongAirApi(
             }
             for (method in secFallbackMethods) {
                 val resp = suspendRunCatching { callGateway(method, simpleParams, sessionToken) }.getOrNull() ?: continue
+                if (resp.httpCode == 403 || resp.errorCode == 100001) {
+                    return CardDiscoveryReport(emptyList(), "", "会话过期", authExpired = true)
+                }
                 if (resp.errorCode == 0 && resp.resultElement != null) {
                     val nestedDesc = mutableListOf<String>()
                     extractCardsRecursively(resp.resultElement, method, foundMap, nestedDesc) {
@@ -609,18 +623,14 @@ class LoongAirApi(
         refreshToken: String,
         fallbackMobile: String,
         fallbackEncUid: String,
-        manualScgTid: String
+        manualScgTid: String,
+        expectedGeneration: Long
     ): LoginResult {
         val defaultParams = buildJsonObject {
             put("SaleChannel", 8)
             put("saleChannel", 8)
             put("language", "zh-cn")
         }
-        var userName = "长龙会员"
-        var mobile = fallbackMobile
-        var memberLevel = "乘云会员"
-        var certNumber = ""
-        var encryptedUserId = fallbackEncUid
         var cardName = "长龙畅飞卡"
 
         val detailResp = callGateway("sales_user_userDetailInfo", defaultParams, sessionToken)
@@ -628,25 +638,23 @@ class LoongAirApi(
             return LoginResult(false, message = "该凭证已失效或未通过长龙校验")
         }
         val detail = detailResp.resultElement as? JsonObject
-        if (detail != null) {
-            userName = detail["Name"]?.primitiveStringOrNull()
-                ?: detail["aliasName"]?.primitiveStringOrNull()
-                ?: userName
-            mobile = detail["Mobile"]?.primitiveStringOrNull() ?: mobile
-            certNumber = detail["Foid"]?.primitiveStringOrNull().orEmpty()
-            if (certNumber.isBlank()) {
-                certNumber = detail["IDInfoList"]?.jsonArray?.firstOrNull()?.jsonObject
-                    ?.get("foid")?.primitiveStringOrNull().orEmpty()
-            }
-            encryptedUserId = detail["encryptedUserId"]?.primitiveStringOrNull()
-                ?: encryptedUserId
-            val lvl = detail["Level"]?.primitiveStringOrNull() ?: "1"
-            memberLevel = when (lvl) {
-                "2" -> "银卡会员"
-                "3" -> "金卡会员"
-                "4" -> "白金卡会员"
-                else -> "乘云会员"
-            }
+        val profileKeys = listOf("Name", "aliasName", "Mobile", "Foid", "encryptedUserId", "Level")
+        if (detailResp.errorCode != 0 || detail == null ||
+            (profileKeys.none { !detail[it]?.primitiveStringOrNull().isNullOrBlank() } && (detail["IDInfoList"] as? JsonArray).isNullOrEmpty())) {
+            return LoginResult(false, message = "未能核验会员资料，请稍后重试")
+        }
+        var userName = detail["Name"]?.primitiveStringOrNull()
+            ?: detail["aliasName"]?.primitiveStringOrNull() ?: "长龙会员"
+        val mobile = detail["Mobile"]?.primitiveStringOrNull() ?: fallbackMobile
+        val idInfo = (detail["IDInfoList"] as? JsonArray)?.firstOrNull() as? JsonObject
+        val certNumber = detail["Foid"]?.primitiveStringOrNull().orEmpty()
+            .ifBlank { idInfo?.get("foid")?.primitiveStringOrNull().orEmpty() }
+        val encryptedUserId = detail["encryptedUserId"]?.primitiveStringOrNull() ?: fallbackEncUid
+        val memberLevel = when (detail["Level"]?.primitiveStringOrNull()) {
+            "2" -> "银卡会员"
+            "3" -> "金卡会员"
+            "4" -> "白金卡会员"
+            else -> "乘云会员"
         }
 
         val effectiveToken = detailResp.setCookieSession
@@ -656,6 +664,7 @@ class LoongAirApi(
             ?: sessionToken
 
         val cardReport = discoverUnionCards(effectiveToken)
+        if (cardReport.authExpired) return LoginResult(false, message = "会话已过期，请重新登录")
         if (userName == "长龙会员" && cardReport.psgNameFallback.isNotBlank()) {
             userName = cardReport.psgNameFallback
         }
@@ -665,7 +674,7 @@ class LoongAirApi(
             cardName = bestCard.cardName
         }
 
-        authPrefs.saveSession(
+        val saved = authPrefs.saveSession(
             token = effectiveToken,
             refreshToken = refreshToken,
             userName = userName,
@@ -677,8 +686,10 @@ class LoongAirApi(
             certNumber = certNumber,
             updatedAt = nowFormatted(),
             detectedCards = cardReport.cards,
-            cardDiagnostic = cardReport.diagnostic
+            cardDiagnostic = cardReport.diagnostic,
+            expectedGeneration = expectedGeneration
         )
+        if (!saved) return LoginResult(false, message = "登录状态已变更，请重新登录")
         pendingVerifyIds.remove(mobile)
 
         val scgHint = when {
@@ -728,13 +739,14 @@ class LoongAirApi(
                 usedToken = usedToken,
                 rotatedSession = resp.setCookieSession,
                 updatedAt = nowFormatted(),
-                nowMillis = System.currentTimeMillis()
+                nowMillis = System.currentTimeMillis(),
+                expectedGeneration = s.sessionGeneration
             )
             return@withLock KeepaliveResult.Alive(tokenRotated = rotated)
         }
 
         if (resp.httpCode == 403 || resp.errorCode == 100001) {
-            return@withLock if (tryRefreshSession(failedToken = usedToken)) {
+            return@withLock if (tryRefreshSession(s)) {
                 KeepaliveResult.Refreshed
             } else {
                 KeepaliveResult.Expired
@@ -744,10 +756,11 @@ class LoongAirApi(
         KeepaliveResult.TransientError("errorCode=${resp.errorCode}")
     }
 
-    suspend fun tryRefreshSession(failedToken: String? = null): Boolean = refreshMutex.withLock {
+    private suspend fun tryRefreshSession(failedSession: UserSessionState): Boolean = refreshMutex.withLock {
         val s = authPrefs.current()
         // 并发请求同时遇到 403 时，若其他协程已刷新成功则直接复用新 Token，防止 refreshToken 二次轮换失效
-        if (!failedToken.isNullOrBlank() && s.isLoggedIn && s.sessionToken.isNotBlank() && s.sessionToken != failedToken) {
+        if (!s.isLoggedIn || s.sessionGeneration != failedSession.sessionGeneration) return@withLock false
+        if (s.sessionToken != failedSession.sessionToken) {
             return@withLock true
         }
         if (s.refreshToken.isBlank()) return@withLock false
@@ -780,17 +793,16 @@ class LoongAirApi(
                     ?: resp.setCookieSession
                     ?: ""
                 val newRt = obj?.get("refreshToken")?.primitiveStringOrNull() ?: s.refreshToken
-                if (newToken.isNotBlank()) {
-                    authPrefs.updateTokens(newToken, newRt, nowFormatted())
-                    return@withLock true
+                if (newToken.length > 8) {
+                    return@withLock authPrefs.updateTokens(s, newToken, newRt, nowFormatted())
                 }
             }
         }
         false
     }
 
-    private fun requireSecCardGrantTid(): String {
-        val tid = authPrefs.current().secCardGrantTid.trim()
+    private fun requireSecCardGrantTid(session: UserSessionState): String {
+        val tid = session.secCardGrantTid.trim()
         if (tid.isBlank()) {
             throw IllegalStateException("未获取到畅飞卡授权 ID (scgTid)，请到「我的」点击「重新同步卡包」并选择你的畅飞卡")
         }
@@ -802,7 +814,8 @@ class LoongAirApi(
      * 返回 Map<YYYY-MM-DD, status> (1=可兑, 0=已兑完, -1=未开放, -2=不适用, -3=已截止, -4=无航班)
      */
     suspend fun getCalendar(fromCity: String, toCity: String): Map<String, Int> {
-        val tid = requireSecCardGrantTid()
+        val s = authPrefs.current()
+        val tid = requireSecCardGrantTid(s)
         val params = buildJsonObject {
             put("scgTid", tid)
             put("departureCode", CityIataMapper.toApiIata(fromCity))
@@ -811,18 +824,18 @@ class LoongAirApi(
             put("saleChannel", 8)
             put("language", "zh-cn")
         }
-        val resObj = callAuthenticated("getSecCardRedeemedCalendar", params) as? JsonObject
-            ?: return emptyMap()
-        val rawMap = resObj["calenderMap"] as? JsonObject ?: return emptyMap()
+        val resObj = callAuthenticated("getSecCardRedeemedCalendar", params, generation = s.sessionGeneration) as? JsonObject
+        val rawMap = resObj?.get("calenderMap") as? JsonObject ?: error("官方放票日历缺失，请稍后重试")
         val today = ChinaClock.today()
         val maxDate = today.plusDays(180)
         val todayStr = today.toString()
         val maxDateStr = maxDate.toString()
         return buildMap {
             for ((dateKey, value) in rawMap) {
+                check(runCatching { LocalDate.parse(dateKey) }.isSuccess) { "官方放票日历日期格式异常" }
                 if (dateKey in todayStr..maxDateStr) {
-                    val code = value.jsonPrimitive.intOrNull
-                    if (code != null) put(dateKey, code)
+                    val code = (value as? JsonPrimitive)?.intOrNull ?: error("官方放票日历状态格式异常")
+                    put(dateKey, code)
                 }
             }
         }
@@ -837,8 +850,11 @@ class LoongAirApi(
         dateStr: String,
         knownRoutes: List<FlightRouteEntity>
     ): List<LiveFlightSeat> {
-        val tid = requireSecCardGrantTid()
         val s = authPrefs.current()
+        val tid = requireSecCardGrantTid(s)
+        val date = LocalDate.parse(dateStr)
+        val fromCode = CityIataMapper.toApiIata(fromCity)
+        val toCode = CityIataMapper.toApiIata(toCity)
         val params = buildJsonObject {
             put("secCardGrantTid", tid)
             put("encryptedUserId", s.encryptedUserId)
@@ -849,29 +865,32 @@ class LoongAirApi(
             put("tripType", 1)
             put("directionType", "")
             put("bookingScenario", 1)
-            put("departureAirportCode", CityIataMapper.toApiIata(fromCity))
-            put("arriveAirportCode", CityIataMapper.toApiIata(toCity))
+            put("departureAirportCode", fromCode)
+            put("arriveAirportCode", toCode)
             put("departureTime", "${dateStr}T00:00:00")
             put("SaleChannel", 8)
             put("saleChannel", 8)
             put("language", "zh-cn")
         }
-        val resObj = callAuthenticated("secCardSearchFlights", params) as? JsonObject
-            ?: return emptyList()
-        val flightInfos = resObj["flightInfos"] as? JsonArray ?: return emptyList()
+        val resObj = callAuthenticated("secCardSearchFlights", params, generation = s.sessionGeneration) as? JsonObject
+            ?: error("官方余票查询结果缺失，请稍后重试")
+        val flightInfos = resObj["flightInfos"] as? JsonArray ?: error("官方航班列表缺失，请稍后重试")
 
         val result = mutableListOf<LiveFlightSeat>()
         for (item in flightInfos) {
-            val fi = item as? JsonObject ?: continue
+            val fi = item as? JsonObject ?: error("官方航班记录格式异常")
             val depRaw = fi["departureTime"]?.primitiveStringOrNull().orEmpty()
             val arrRaw = fi["arriveTime"]?.primitiveStringOrNull().orEmpty()
-            if (depRaw.length < 16 || arrRaw.length < 16) continue
+            check(depRaw.length >= 16 && arrRaw.length >= 16) { "官方航班起降时间格式异常" }
             val depDatePart = depRaw.substring(0, 10)
             val arrDatePart = arrRaw.substring(0, 10)
+            check(depDatePart == dateStr && (arrDatePart == dateStr || arrDatePart == date.plusDays(1).toString())) {
+                "官方航班日期与查询不符"
+            }
             val dep = depRaw.substring(11, 16)
             val arrHm = arrRaw.substring(11, 16)
-            val depMin = parseMinutes(dep) ?: 0
-            val arrMin = parseMinutes(arrHm) ?: 0
+            val depMin = parseMinutes(dep) ?: error("官方起飞时间格式异常")
+            val arrMin = parseMinutes(arrHm) ?: error("官方到达时间格式异常")
             val isNextDay = arrDatePart != depDatePart || arrMin < depMin
             val arr = if (isNextDay) "$arrHm+1" else arrHm
             val durMins = (if (isNextDay) arrMin + 24 * 60 - depMin else arrMin - depMin).coerceAtLeast(0)
@@ -890,33 +909,34 @@ class LoongAirApi(
                 ?.takeIf { it.isNotBlank() } ?: "A320"
             val floatPrice = fi["floatPrice"]?.jsonPrimitive?.intOrNull
                 ?: resObj["floatPrice"]?.jsonPrimitive?.intOrNull
-            val rawFlightNo = listOf(
+            val numberFields = listOf(
                 "flightNo", "flightNumber", "fltNo", "flightNum",
                 "carrierFlightNo", "marketFlightNo"
-            ).firstNotNullOfOrNull { k ->
-                fi[k]?.primitiveStringOrNull()?.takeIf { it.isNotBlank() }
+            ).mapNotNull { fi[it] }.filter { it != JsonNull && (it as? JsonPrimitive)?.content?.isBlank() != true }
+            val flightNo = if (numberFields.isNotEmpty()) {
+                numberFields.firstNotNullOfOrNull { field -> field.primitiveStringOrNull()?.let { decodeFlightNo(it, floatPrice) } }
+                    ?: error("官方航班号无法识别，请稍后重试")
+            } else {
+                val scheduled = knownRoutes.filter {
+                    it.fromIata == fromCode && it.toIata == toCode && it.depTime == dep && it.arrTime == arr &&
+                        date.dayOfWeek.value.toString() in it.frequency
+                }
+                val numbers = scheduled.map { decodeFlightNo(it.flightNo) }.distinct()
+                numbers.singleOrNull() ?: error("官方未提供航班号，现有时刻无法唯一确认")
             }
-            val officialFlightNo = rawFlightNo?.let { decodeFlightNo(it, floatPrice) }
 
-            val matched = matchFlightRoute(dep, arrHm, knownRoutes)
-            val matchedFlightNo = matched?.flightNo?.let { decodeFlightNo(it, null) }
-            val flightNo = officialFlightNo
-                ?: matchedFlightNo
-                ?: "GJ${dep.replace(":", "")}"
-            val aircraft = matched?.aircraft?.ifBlank { officialAircraft } ?: officialAircraft
-            val stopover = matched?.stopover?.ifBlank { officialStopover } ?: officialStopover
-            val duration = matched?.duration?.ifBlank { computedDuration } ?: computedDuration
-
-            val cabins = fi["cabinInfos"] as? JsonArray
+            val rawCabins = fi["cabinInfos"]
+            check(rawCabins == null || rawCabins is JsonArray || rawCabins is JsonNull) { "官方舱位列表格式异常" }
+            val cabins = rawCabins as? JsonArray
             if (cabins.isNullOrEmpty()) {
                 result.add(
                     LiveFlightSeat(
                         flightNo = flightNo,
                         depTime = dep,
                         arrTime = arr,
-                        duration = duration,
-                        aircraft = aircraft,
-                        stopover = stopover,
+                        duration = computedDuration,
+                        aircraft = officialAircraft,
+                        stopover = officialStopover,
                         redeemPrice = 0.0,
                         secCardLeft = 0,
                         normalLeft = 0,
@@ -926,15 +946,15 @@ class LoongAirApi(
                 continue
             }
             for (cItem in cabins) {
-                val c = cItem as? JsonObject ?: continue
+                val c = cItem as? JsonObject ?: error("官方舱位记录格式异常")
                 result.add(
                     LiveFlightSeat(
                         flightNo = flightNo,
                         depTime = dep,
                         arrTime = arr,
-                        duration = duration,
-                        aircraft = aircraft,
-                        stopover = stopover,
+                        duration = computedDuration,
+                        aircraft = officialAircraft,
+                        stopover = officialStopover,
                         redeemPrice = c["ticketPrice"]?.jsonPrimitive?.doubleOrNull ?: 0.0,
                         secCardLeft = c["secCardBaseLeftCount"]?.jsonPrimitive?.intOrNull ?: 0,
                         normalLeft = c["leftCount"]?.jsonPrimitive?.intOrNull ?: 0,
@@ -952,7 +972,8 @@ class LoongAirApi(
      * （/fare/clientNoLogin/getCityInfosByGroupHmt 与 GetAirportInfosByGroup）。
      */
     suspend fun getOfficialDepartureAirports(): List<OfficialAirportEndpoint> {
-        val tid = authPrefs.current().secCardGrantTid.trim()
+        val session = authPrefs.current()
+        val tid = session.secCardGrantTid.trim()
         val baseParams = buildJsonObject {
             put("SaleChannel", 8)
             put("saleChannel", 8)
@@ -973,26 +994,37 @@ class LoongAirApi(
             add("/fare/clientNoLogin/getCityInfosByGroupHmt" to baseParams)
             add("GetAirportInfosByGroup" to baseParams)
         }
+        var lastError: Throwable? = null
+        var confirmedEmpty = false
         for ((method, params) in methods) {
-            val res = suspendRunCatching {
-                if (authPrefs.current().isLoggedIn) {
-                    callAuthenticated(method, params)
+            val result = suspendRunCatching {
+                val payload = if (session.isLoggedIn) {
+                    callAuthenticated(method, params, generation = session.sessionGeneration)
                 } else {
                     val gw = callGateway(method, params)
-                    if (gw.errorCode == 0) gw.resultElement else null
+                    check(gw.errorCode == 0) { "官方机场目录查询失败" }
+                    gw.resultElement ?: JsonNull
                 }
-            }.getOrNull() ?: continue
-            val parsed = parseAirportEndpoints(res)
+                parseAirportEndpoints(payload)
+            }
+            val parsed = result.getOrNull()
+            if (parsed == null) {
+                lastError = result.exceptionOrNull()
+                continue
+            }
             if (parsed.isNotEmpty()) return parsed
+            confirmedEmpty = true
         }
-        return emptyList()
+        if (confirmedEmpty) return emptyList()
+        throw IllegalStateException("未能获取完整的官方出发机场目录", lastError)
     }
 
     /**
      * 拉取当前畅飞卡在某出发城市允许兑换的官方目的地城市与机场明细
      */
     suspend fun getOfficialArrivalAirports(fromCity: String): List<OfficialAirportEndpoint> {
-        val tid = requireSecCardGrantTid()
+        val session = authPrefs.current()
+        val tid = requireSecCardGrantTid(session)
         val params = buildJsonObject {
             put("scgTid", tid)
             put("fromCode", CityIataMapper.toApiIata(fromCity))
@@ -1000,22 +1032,50 @@ class LoongAirApi(
             put("saleChannel", 8)
             put("language", "zh-cn")
         }
-        val resElem = callAuthenticated("/coupon/client/getSecCardArriveAirport", params)
+        val resElem = callAuthenticated("/coupon/client/getSecCardArriveAirport", params, generation = session.sessionGeneration)
         return parseAirportEndpoints(resElem)
     }
 
-    private fun parseAirportEndpoints(root: JsonElement): List<OfficialAirportEndpoint> {
+    internal fun parseAirportEndpoints(root: JsonElement): List<OfficialAirportEndpoint> {
         val byCode = linkedMapOf<String, OfficialAirportEndpoint>()
-        fun collect(elem: JsonElement) {
+        fun malformed(): Nothing = throw IllegalStateException("官方机场目录数据不完整，请稍后重试")
+        val collectionKeys = setOf("list", "data", "airports", "cities", "citys", "airportlist", "citylist", "rows", "items", "records")
+        var parsedRows = 0
+        fun isSkippedRegionKey(lower: String): Boolean =
+            lower.startsWith("int") || lower.contains("international") || lower.contains("hmt")
+
+        fun checkPaginationMarkers(obj: JsonObject) {
+            val more = obj["hasMore"] ?: obj["hasNext"] ?: obj["hasNextPage"]
+            val last = obj["isLastPage"] ?: obj["lastPage"]
+            if (more?.primitiveStringOrNull() in setOf("true", "1") ||
+                last?.primitiveStringOrNull() in setOf("false", "0") ||
+                (obj["totalPages"]?.primitiveStringOrNull()?.toIntOrNull() ?: 1) > 1 ||
+                (obj["pageNum"]?.primitiveStringOrNull()?.toIntOrNull() ?: 1) > 1
+            ) {
+                malformed()
+            }
+        }
+
+        fun collect(elem: JsonElement, allowEmpty: Boolean) {
             when (elem) {
-                is JsonArray -> elem.forEach { collect(it) }
+                is JsonArray -> {
+                    if (elem.isEmpty() && !allowEmpty) malformed()
+                    elem.forEach { collect(it, false) }
+                }
                 is JsonObject -> {
+                    checkPaginationMarkers(elem)
+                    val listed = elem.entries.filter {
+                        val key = it.key.lowercase()
+                        it.value is JsonArray && (key in collectionKeys || key in setOf("domairports", "domcitys", "domcities"))
+                    }.singleOrNull()
+                    val total = (elem["totalCount"] ?: elem["total"])?.primitiveStringOrNull()?.toIntOrNull()
+                    if (listed != null && total != null && total != (listed.value as JsonArray).size) malformed()
                     // 仅采集国内机场/城市，排除国际与港澳台列表（畅飞卡仅适用于国内航线）
                     val domAirports = elem["domAirports"]
                     val domCitys = elem["domCitys"] ?: elem["domCities"]
                     if (domAirports != null || domCitys != null) {
-                        if (domAirports != null) collect(domAirports)
-                        if (domCitys != null) collect(domCitys)
+                        if (domAirports != null) collect(domAirports, true)
+                        if (domCitys != null) collect(domCitys, true)
                         return
                     }
                     val hasAirportShape = listOf(
@@ -1051,38 +1111,55 @@ class LoongAirApi(
 
                         val finalCode = code.ifBlank { if (rawCity.isNotBlank()) CityIataMapper.toApiIata(rawCity) else "" }
                         val resolvedName = CityIataMapper.disambiguateCityName(rawCity, finalCode, airport)
-                        if (resolvedName.isNotBlank() && finalCode.isNotBlank()) {
-                            CityIataMapper.registerDynamic(resolvedName, finalCode, pinyin)
-                            val key = finalCode
-                            val existing = byCode[key]
-                            val betterAirport = airport.ifBlank { existing?.airportName.orEmpty() }
-                            val betterPinyin = pinyin.ifBlank { existing?.pinyin.orEmpty() }
-                            if (existing == null ||
-                                (existing.airportName.isBlank() && betterAirport.isNotBlank()) ||
-                                (existing.pinyin.isBlank() && betterPinyin.isNotBlank())
-                            ) {
-                                byCode[key] = OfficialAirportEndpoint(
-                                    cityName = resolvedName,
-                                    airportName = betterAirport,
-                                    airportCode = finalCode,
-                                    pinyin = betterPinyin
-                                )
-                            }
+                        if (!CityIataMapper.isAsciiIataCode(finalCode) || resolvedName.isBlank()) malformed()
+                        parsedRows++
+                        val existing = byCode[finalCode]
+                        val betterAirport = airport.ifBlank { existing?.airportName.orEmpty() }
+                        val betterPinyin = pinyin.ifBlank { existing?.pinyin.orEmpty() }
+                        if (existing == null ||
+                            (existing.airportName.isBlank() && betterAirport.isNotBlank()) ||
+                            (existing.pinyin.isBlank() && betterPinyin.isNotBlank())
+                        ) {
+                            byCode[finalCode] = OfficialAirportEndpoint(
+                                cityName = resolvedName,
+                                airportName = betterAirport,
+                                airportCode = finalCode,
+                                pinyin = betterPinyin
+                            )
                         }
                     } else {
-                        for ((k, child) in elem) {
+                        val knownEntries = elem.entries.filter { (k, _) ->
                             val lower = k.lowercase()
-                            if (lower.startsWith("int") || lower.contains("international") || lower.contains("hmt")) {
-                                continue
+                            !isSkippedRegionKey(lower) && (lower in collectionKeys || k.matches(Regex("[A-Za-z]")))
+                        }
+                        if (knownEntries.isNotEmpty()) {
+                            knownEntries.forEach { (_, child) -> collect(child, true) }
+                            elem.entries.forEach { (k, child) ->
+                                val lower = k.lowercase()
+                                if (!isSkippedRegionKey(lower) && lower !in collectionKeys && !k.matches(Regex("[A-Za-z]")) && child is JsonObject) {
+                                    checkPaginationMarkers(child)
+                                }
                             }
-                            if (child is JsonObject || child is JsonArray) collect(child)
+                        } else {
+                            var foundCollection = false
+                            for ((k, child) in elem) {
+                                val lower = k.lowercase()
+                                if (isSkippedRegionKey(lower)) continue
+                                if (child is JsonObject || child is JsonArray) {
+                                    val before = parsedRows
+                                    collect(child, false)
+                                    if (parsedRows == before) malformed()
+                                    foundCollection = true
+                                }
+                            }
+                            if (!foundCollection) malformed()
                         }
                     }
                 }
-                else -> Unit
+                else -> malformed()
             }
         }
-        collect(root)
+        collect(root, true)
 
         // 若接口中仍有其他未知双机场城市（多个不同三字码对应同一 rawCity），自动以机场简称或三字码区分标注
         val grouped = byCode.values.groupBy { it.cityName }
@@ -1094,10 +1171,9 @@ class LoongAirApi(
                     .replace("机场", "")
                     .trim()
                 val label = if (shortSuffix.isNotBlank()) "${ep.cityName}$shortSuffix" else "${ep.cityName}(${ep.airportCode})"
-                CityIataMapper.registerDynamic(label, ep.airportCode, ep.pinyin)
                 ep.copy(cityName = label)
             } else ep
-        }.sortedBy { it.cityName }
+        }.onEach { CityIataMapper.registerDynamic(it.cityName, it.airportCode, it.pinyin) }.sortedBy { it.cityName }
     }
 
     /**
@@ -1106,26 +1182,12 @@ class LoongAirApi(
     suspend fun getOfficialDestinations(fromCity: String): List<String> =
         getOfficialArrivalAirports(fromCity).map { it.cityName }
 
-    private fun matchFlightRoute(
-        dep: String,
-        arr: String,
-        routes: List<FlightRouteEntity>
-    ): FlightRouteEntity? {
-        routes.firstOrNull { it.depTime == dep && it.arrTime.take(5) == arr }?.let { return it }
-        routes.firstOrNull { it.depTime == dep }?.let { return it }
-        val depMin = parseMinutes(dep) ?: return null
-        return routes.mapNotNull { r ->
-            val rMin = parseMinutes(r.depTime) ?: return@mapNotNull null
-            val diff = abs(depMin - rMin)
-            if (diff <= 45) r to diff else null
-        }.minByOrNull { it.second }?.first
-    }
-
     private fun parseMinutes(hhmm: String): Int? {
         val parts = hhmm.take(5).split(":")
         if (parts.size != 2) return null
         val h = parts[0].toIntOrNull() ?: return null
         val m = parts[1].toIntOrNull() ?: return null
+        if (h !in 0..23 || m !in 0..59) return null
         return h * 60 + m
     }
 

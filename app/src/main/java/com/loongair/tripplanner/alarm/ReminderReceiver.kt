@@ -3,34 +3,52 @@ package com.loongair.tripplanner.alarm
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import androidx.room.withTransaction
 import com.loongair.tripplanner.data.local.AppDatabase
+import com.loongair.tripplanner.data.local.ReminderEntity
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
 
+internal const val REMINDER_EARLY_TOLERANCE_MS = 15_000L
+
+internal enum class ReminderTriggerDecision { SKIP, RESCHEDULE, FIRE }
+
+internal fun evaluateReminderTrigger(
+    reminder: ReminderEntity,
+    nowMillis: Long
+): ReminderTriggerDecision = when {
+    !reminder.enabled || reminder.fired -> ReminderTriggerDecision.SKIP
+    reminder.triggerAtMillis > nowMillis + REMINDER_EARLY_TOLERANCE_MS -> ReminderTriggerDecision.RESCHEDULE
+    else -> ReminderTriggerDecision.FIRE
+}
+
 class ReminderReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val reminderId = intent.getLongExtra(NotificationHelper.EXTRA_REMINDER_ID, -1L)
-        val planId = intent.getLongExtra(NotificationHelper.EXTRA_PLAN_ID, -1L)
-        val title = intent.getStringExtra(NotificationHelper.EXTRA_TITLE) ?: "畅飞卡抢票提醒"
-        val message = intent.getStringExtra(NotificationHelper.EXTRA_MESSAGE) ?: "你安排的畅飞卡行程到了抢票提醒时间，快去查余票吧！"
-
-        NotificationHelper.showReminderNotification(
-            context = context,
-            reminderId = if (reminderId > 0) reminderId else System.currentTimeMillis(),
-            planId = planId,
-            title = title,
-            message = message
-        )
-
-        if (reminderId > 0) {
-            val pendingResult = goAsync()
-            CoroutineScope(Dispatchers.IO).launch {
-                try {
-                    AppDatabase.getInstance(context).reminderDao().markFired(reminderId)
-                } finally {
-                    pendingResult.finish()
+        if (reminderId <= 0) return
+        val pendingResult = goAsync()
+        CoroutineScope(Dispatchers.IO).launch {
+            try {
+                val db = AppDatabase.getInstance(context)
+                val toReschedule = db.withTransaction {
+                    val reminder = db.reminderDao().getById(reminderId) ?: return@withTransaction null
+                    when (evaluateReminderTrigger(reminder, System.currentTimeMillis())) {
+                        ReminderTriggerDecision.SKIP -> null
+                        ReminderTriggerDecision.RESCHEDULE -> reminder
+                        ReminderTriggerDecision.FIRE -> {
+                            if (NotificationHelper.showReminderNotification(context, reminder.id, reminder.planId, reminder.title, reminder.message)) {
+                                db.reminderDao().markFired(reminder.id)
+                            }
+                            null
+                        }
+                    }
                 }
+                if (toReschedule != null) {
+                    ReminderScheduler(context).schedule(toReschedule)
+                }
+            } finally {
+                pendingResult.finish()
             }
         }
     }

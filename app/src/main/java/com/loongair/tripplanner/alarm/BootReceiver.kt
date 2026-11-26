@@ -1,9 +1,10 @@
 package com.loongair.tripplanner.alarm
 
+import android.app.AlarmManager
 import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
-import com.loongair.tripplanner.data.local.AppDatabase
+import android.os.Build
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -11,17 +12,16 @@ import kotlinx.coroutines.launch
 class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         val action = intent.action ?: return
-        if (action !in RESCHEDULE_ACTIONS) {
-            return
-        }
+        val permissionGranted = Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            action == AlarmManager.ACTION_SCHEDULE_EXACT_ALARM_PERMISSION_STATE_CHANGED
+        if (!permissionGranted && action !in RESCHEDULE_ACTIONS) return
         val pendingResult = goAsync()
         CoroutineScope(Dispatchers.IO).launch {
             try {
                 val scheduler = ReminderScheduler(context)
-                val activeReminders = AppDatabase.getInstance(context)
-                    .reminderDao()
-                    .getPendingActive(System.currentTimeMillis())
-                activeReminders.forEach { scheduler.schedule(it) }
+                if (!permissionGranted || scheduler.canScheduleExactAlarms()) {
+                    scheduler.restorePending()
+                }
             } finally {
                 pendingResult.finish()
             }

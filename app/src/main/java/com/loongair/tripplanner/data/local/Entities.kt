@@ -130,6 +130,10 @@ data class ReminderEntity(
     val fired: Boolean = false
 )
 
+/** A blank destination marks a successful full departure-city directory fetch. */
+@Entity(tableName = "network_sync", primaryKeys = ["fromCity", "toCity"])
+data class NetworkSyncEntity(val fromCity: String, val toCity: String, val fetchedAt: Long)
+
 const val ROUTE_SOURCE_BUNDLED = "bundled"
 const val ROUTE_SOURCE_OFFICIAL = "official"
 

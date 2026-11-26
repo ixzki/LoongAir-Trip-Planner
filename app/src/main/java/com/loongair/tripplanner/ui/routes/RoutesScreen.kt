@@ -51,6 +51,7 @@ import androidx.compose.material3.Icon
 import androidx.compose.material3.Surface
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableFloatStateOf
 import androidx.compose.runtime.mutableIntStateOf
@@ -83,6 +84,7 @@ import com.loongair.tripplanner.data.remote.CityMeta
 import com.loongair.tripplanner.data.remote.LoongAirApi
 import com.loongair.tripplanner.data.repository.NetworkRouteSummary
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
+import com.loongair.tripplanner.util.rememberChinaDateTime
 import com.loongair.tripplanner.ui.MainViewModel
 import com.loongair.tripplanner.ui.components.CompactScrollTopBar
 import com.loongair.tripplanner.ui.components.FirstRunOnboardingGate
@@ -129,6 +131,10 @@ fun RoutesScreen(
     val session by viewModel.sessionState.collectAsStateWithLifecycle()
     val officialAirports by viewModel.officialAirports.collectAsStateWithLifecycle()
     val departureAirportsLoading by viewModel.departureAirportsLoading.collectAsStateWithLifecycle()
+    val now = rememberChinaDateTime()
+    val today = now.toLocalDate()
+    val cutoffPassed = RoundTripMatcher.isRedemptionClosed(today.plusDays(3), now)
+    LaunchedEffect(today, cutoffPassed, state.allRoutes.isEmpty()) { viewModel.refreshCachedRouteSummaries() }
 
     BackHandler(enabled = detailState.route != null) {
         viewModel.closeRouteCalendarDetail()
@@ -891,7 +897,7 @@ private fun NetworkRouteDetailCard(
                 )
             }
 
-            if (route.isCalendarSynced && route.availableDaysCount == 0 && route.soldOutDaysCount > 0) {
+            if (route.hasSyncedCalendar && route.availableDaysCount == 0 && route.soldOutDaysCount > 0) {
                 TonePillBadge(
                     text = "近期全约满",
                     backgroundColor = p.warningBg,

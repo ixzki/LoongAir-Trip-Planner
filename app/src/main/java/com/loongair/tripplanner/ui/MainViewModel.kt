@@ -5,6 +5,7 @@ import androidx.lifecycle.AndroidViewModel
 import androidx.lifecycle.viewModelScope
 import com.loongair.tripplanner.TripPlannerApp
 import com.loongair.tripplanner.alarm.NotificationHelper
+import com.loongair.tripplanner.alarm.PlanReminderTimes
 import com.loongair.tripplanner.data.local.OfficialAirportEntity
 import com.loongair.tripplanner.data.local.ROUTE_SOURCE_BUNDLED
 import com.loongair.tripplanner.data.local.ReminderEntity
@@ -22,8 +23,11 @@ import com.loongair.tripplanner.data.repository.RoundTripQuery
 import com.loongair.tripplanner.util.ChinaClock
 import com.loongair.tripplanner.util.suspendRunCatching
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.NonCancellable
+import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.cancel
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.flow.MutableStateFlow
 import kotlinx.coroutines.flow.SharingStarted
@@ -33,6 +37,7 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.flow.update
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.time.Instant
 import java.time.LocalDate
 import kotlin.random.Random
 
@@ -85,12 +90,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     val departureAirportsLoading: StateFlow<Boolean> = _departureAirportsLoading.asStateFlow()
 
     private var batchJob: Job? = null
+    private var routeDetailScope: CoroutineScope? = null
     private var officialSyncJob: Job? = null
     private var calibrateJob: Job? = null
     private var searchJob: Job? = null
     private var keepaliveJob: Job? = null
+    private var singleRouteRefreshJob: Job? = null
+    private var verifySeatsJob: Job? = null
+    private var recheckPlanJob: Job? = null
+    private var cardSyncJob: Job? = null
+    private var departureAirportsJob: Job? = null
 
     init {
+        viewModelScope.launch { scheduler.restorePending() }
         viewModelScope.launch {
             repo.ensureInitialized()
             val provinces = repo.getChinaProvinces()
@@ -216,6 +228,27 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         return updated
     }
 
+    suspend fun refreshCachedRouteSummaries() {
+        val previous = _networkState.value.allRoutes.associateBy { it.fromCity to it.toCity }
+        if (previous.isEmpty()) return
+        val previousDetail = _routeDetailState.value.route
+        val refreshed = repo.getAllNetworkRoutes().associateBy { it.fromCity to it.toCity }
+        // Preserve routes changed by a concurrent refresh while reading the local calendar.
+        _networkState.update { st ->
+            val routes = st.allRoutes.map { route ->
+                val key = route.fromCity to route.toCity
+                if (previous[key] === route) refreshed[key] ?: route else route
+            }
+            st.copy(allRoutes = routes, allOriginCities = rankOriginCitiesByConnectivity(routes)).withRecomputedFilter()
+        }
+        if (previousDetail != null) {
+            val fresh = refreshed[previousDetail.fromCity to previousDetail.toCity] ?: return
+            _routeDetailState.update { st ->
+                if (st.route === previousDetail) st.copy(route = fresh) else st
+            }
+        }
+    }
+
     fun clearSnackbar() {
         _snackbarMessage.value = null
     }
@@ -260,16 +293,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val key = "$fromCity|$toCity"
-        viewModelScope.launch {
+        singleRouteRefreshJob?.cancel()
+        singleRouteRefreshJob = viewModelScope.launch {
             _networkState.update { it.copy(refreshingRouteKey = key) }
             try {
-                val cal = repo.refreshRouteCalendar(fromCity, toCity)
-                val today = ChinaClock.today()
-                val todayStr = today.toString()
-                val maxDateStr = today.plusDays(39).toString()
-                val avail = cal.count { (d, v) -> d in todayStr..maxDateStr && v == 1 }
-                refreshSingleRouteInState(fromCity, toCity)
-                showMessage("$fromCity → $toCity 日历已刷新：近40天共有 $avail 天可兑换")
+                repo.refreshRouteCalendar(fromCity, toCity)
+                val summary = refreshSingleRouteInState(fromCity, toCity) ?: return@launch
+                showMessage("$fromCity → $toCity 日历已刷新：近40天共有 ${summary.availableDaysCount} 天可兑换")
             } catch (c: CancellationException) {
                 throw c
             } catch (inv: RouteInvalidatedException) {
@@ -284,18 +314,24 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun openRouteCalendarDetail(route: NetworkRouteSummary) {
-        viewModelScope.launch {
+        closeRouteCalendarDetail()
+        val detailScope = CoroutineScope(viewModelScope.coroutineContext + SupervisorJob(viewModelScope.coroutineContext[Job]))
+        routeDetailScope = detailScope
+        detailScope.launch {
             val cal = repo.getRouteCalendarMap(route.fromCity, route.toCity)
             val seats = repo.getRouteSeatSnapshotsByDate(route.fromCity, route.toCity)
             val globalUnavail = repo.getGlobalUnavailableDates()
-            val today = ChinaClock.today()
-            val todayStr = today.toString()
-            val maxDateStr = today.plusDays(39).toString()
-            val recentCal = cal.filterKeys { it in todayStr..maxDateStr }
-            val defaultDate = route.nearestAvailableDate?.takeIf { it in todayStr..maxDateStr }
-                ?: recentCal.entries.firstOrNull { it.value == 1 }?.key
-                ?: recentCal.entries.firstOrNull { it.value == 0 }?.key
-                ?: today.plusDays(3).toString()
+            val now = ChinaClock.nowDateTime()
+            val today = now.toLocalDate()
+            val dates = (0L until 40L).associate { offset ->
+                val date = today.plusDays(offset)
+                date.toString() to RoundTripMatcher.normalizeCalendarStatus(cal[date.toString()], date, now, globalUnavail)
+            }
+            val defaultDate = dates.entries.firstOrNull { it.value == 1 }?.key
+                ?: dates.entries.firstOrNull { it.value == 0 }?.key
+                ?: dates.entries.firstOrNull { it.value == null || it.value == -1 }?.key
+                ?: today.toString()
+            if (routeDetailScope !== detailScope) return@launch
             _routeDetailState.value = RouteCalendarDetailUiState(
                 route = route,
                 calendarByDate = cal,
@@ -305,7 +341,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 isRefreshingCalendar = false,
                 queryingSeatsDate = null
             )
-            if (cal.isEmpty() && sessionState.value.isLoggedIn) {
+            if ((!route.isCalendarSynced || cal.isEmpty()) && sessionState.value.isLoggedIn) {
                 refreshOpenedRouteCalendar()
             } else if (cal.isNotEmpty() && route.flights.isEmpty() && sessionState.value.isLoggedIn) {
                 autoBackfillOpenedRouteSchedule(route.fromCity, route.toCity, cal)
@@ -318,7 +354,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         toCity: String,
         cal: Map<String, Int>
     ) {
-        viewModelScope.launch {
+        routeDetailScope?.launch {
             val sampled = suspendRunCatching {
                 repo.ensureRouteScheduleSampled(fromCity, toCity, cal)
             }.getOrDefault(false)
@@ -334,18 +370,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun closeRouteCalendarDetail() {
-        calibrateJob?.cancel()
+        routeDetailScope?.cancel()
+        routeDetailScope = null
         calibrateJob = null
         _routeDetailState.value = RouteCalendarDetailUiState()
     }
 
     fun refreshOpenedRouteCalendar() {
         val currentRoute = _routeDetailState.value.route ?: return
+        val detailScope = routeDetailScope ?: return
+        if (_routeDetailState.value.isRefreshingCalendar) return
         if (!sessionState.value.isLoggedIn) {
             showMessage("请先在「我的」页登录账号后再刷新放票日历")
             return
         }
-        viewModelScope.launch {
+        detailScope.launch {
             _routeDetailState.update { it.copy(isRefreshingCalendar = true) }
             try {
                 repo.refreshRouteCalendar(currentRoute.fromCity, currentRoute.toCity)
@@ -358,11 +397,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val seats = repo.getRouteSeatSnapshotsByDate(currentRoute.fromCity, currentRoute.toCity)
                 val globalUnavail = repo.getGlobalUnavailableDates()
                 val updatedSummary = refreshSingleRouteInState(currentRoute.fromCity, currentRoute.toCity)
-                    ?: currentRoute
-                val today = ChinaClock.today()
-                val todayStr = today.toString()
-                val maxDateStr = today.plusDays(39).toString()
-                val avail = cal.count { (d, v) -> d in todayStr..maxDateStr && v == 1 }
+                    ?: return@launch
+                if (routeDetailScope !== detailScope) return@launch
                 _routeDetailState.update { st ->
                     st.copy(
                         route = updatedSummary,
@@ -370,20 +406,20 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                         globalUnavailableDates = globalUnavail,
                         seatsByDate = seats,
                         selectedDate = st.selectedDate
-                            ?: updatedSummary.nearestAvailableDate?.takeIf { it in todayStr..maxDateStr }
+                            ?: updatedSummary.nearestAvailableDate
                     )
                 }
-                showMessage("${currentRoute.fromCity} → ${currentRoute.toCity} 近40天日历已更新：共 $avail 天可兑")
+                showMessage("${currentRoute.fromCity} → ${currentRoute.toCity} 近40天日历已更新：共 ${updatedSummary.availableDaysCount} 天可兑")
             } catch (c: CancellationException) {
                 throw c
             } catch (inv: RouteInvalidatedException) {
-                closeRouteCalendarDetail()
                 reloadAllCityAndRouteData()
+                if (routeDetailScope === detailScope) closeRouteCalendarDetail()
                 showMessage(inv.message ?: "已自动剔除失效航线")
             } catch (e: Exception) {
                 showMessage("刷新日历失败：${e.message}")
             } finally {
-                _routeDetailState.update { it.copy(isRefreshingCalendar = false) }
+                if (routeDetailScope === detailScope) _routeDetailState.update { it.copy(isRefreshingCalendar = false) }
             }
         }
     }
@@ -398,12 +434,11 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             RoundTripMatcher.normalizeCalendarStatus(
                 rawStatus = rawStatus,
                 date = it,
-                today = ChinaClock.today(),
                 globalUnavailableDates = st.globalUnavailableDates
             )
         } ?: rawStatus
         val hasCached = !st.seatsByDate[dateStr].isNullOrEmpty()
-        if (autoQuerySeats && (status == -2 || status == -3 || status == -4)) {
+        if (autoQuerySeats && status != null && status in -4..-1) {
             return
         }
         if (autoQuerySeats && sessionState.value.isLoggedIn && !hasCached) {
@@ -415,17 +450,19 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun queryRouteDetailSeats(dateStr: String) {
         val currentRoute = _routeDetailState.value.route ?: return
+        val detailScope = routeDetailScope ?: return
         if (!sessionState.value.isLoggedIn) {
             showMessage("请先在「我的」页登录账号后再查实时余票")
             return
         }
-        viewModelScope.launch {
+        detailScope.launch {
             _routeDetailState.update { it.copy(selectedDate = dateStr, queryingSeatsDate = dateStr) }
             try {
                 val live = repo.refreshRouteSeats(currentRoute.fromCity, currentRoute.toCity, dateStr)
                 val allSeats = repo.getRouteSeatSnapshotsByDate(currentRoute.fromCity, currentRoute.toCity)
                 val updatedSummary = refreshSingleRouteInState(currentRoute.fromCity, currentRoute.toCity)
                     ?: currentRoute
+                if (routeDetailScope !== detailScope) return@launch
                 _routeDetailState.update { it.copy(route = updatedSummary, seatsByDate = allSeats) }
                 val totalLeft = live.sumOf { it.secCardLeft }
                 val dayCalStatus = _routeDetailState.value.calendarByDate[dateStr]
@@ -441,13 +478,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             } catch (c: CancellationException) {
                 throw c
             } catch (inv: RouteInvalidatedException) {
-                closeRouteCalendarDetail()
                 reloadAllCityAndRouteData()
+                if (routeDetailScope === detailScope) closeRouteCalendarDetail()
                 showMessage(inv.message ?: "该航线已停航或本卡不适用，已自动剔除")
             } catch (e: Exception) {
                 showMessage("查询当日余票失败：${e.message}")
             } finally {
-                _routeDetailState.update {
+                if (routeDetailScope === detailScope) _routeDetailState.update {
                     if (it.queryingSeatsDate == dateStr) it.copy(queryingSeatsDate = null) else it
                 }
             }
@@ -456,12 +493,13 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
 
     fun calibrateOpenedRouteWeeklySchedule() {
         val currentRoute = _routeDetailState.value.route ?: return
+        val detailScope = routeDetailScope ?: return
         if (!sessionState.value.isLoggedIn) {
             showMessage("请先在「我的」页登录账号后再校准每周真实班期")
             return
         }
         if (calibrateJob?.isActive == true || _routeDetailState.value.isCalibratingSchedule) return
-        calibrateJob = viewModelScope.launch {
+        calibrateJob = detailScope.launch {
             _routeDetailState.update { it.copy(isCalibratingSchedule = true) }
             try {
                 val updatedFlights = repo.calibrateRouteWeeklySchedule(currentRoute.fromCity, currentRoute.toCity)
@@ -469,6 +507,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val seats = repo.getRouteSeatSnapshotsByDate(currentRoute.fromCity, currentRoute.toCity)
                 val updatedSummary = refreshSingleRouteInState(currentRoute.fromCity, currentRoute.toCity)
                     ?: currentRoute.copy(flights = updatedFlights)
+                if (routeDetailScope !== detailScope) return@launch
                 _routeDetailState.update {
                     it.copy(
                         route = updatedSummary,
@@ -477,14 +516,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     )
                 }
                 showMessage(
-                    "${currentRoute.fromCity} → ${currentRoute.toCity} 周一至周日班期已精确校准：共 ${updatedFlights.size} 个航班"
+                    "${currentRoute.fromCity} → ${currentRoute.toCity} 已按实际取得的样本更新班期，未核实的星期已保留（共 ${updatedFlights.size} 个航班）"
                 )
-            } catch (_: CancellationException) {
-                showMessage("已取消班期校准")
+            } catch (c: CancellationException) {
+                throw c
             } catch (e: Exception) {
                 showMessage("校准每周班期失败：${e.message}")
             } finally {
-                _routeDetailState.update { it.copy(isCalibratingSchedule = false) }
+                if (routeDetailScope === detailScope) _routeDetailState.update { it.copy(isCalibratingSchedule = false) }
             }
         }
     }
@@ -687,7 +726,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val candKey = "${candidate.destinationCity}|${candidate.outboundDate}|${candidate.returnDate}"
-        viewModelScope.launch {
+        verifySeatsJob?.cancel()
+        verifySeatsJob = viewModelScope.launch {
             _searchState.update { it.copy(verifyingDestination = candKey) }
             try {
                 val (outSeats, retSeats) = repo.refreshRoundTripSeats(
@@ -775,6 +815,10 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         note: String,
         onSaved: (TripPlanEntity) -> Unit = {}
     ) {
+        if (!RoundTripMatcher.isFeasibleFlightPair(candidate.outboundDate, outFlight, candidate.returnDate, retFlight)) {
+            showMessage("返程必须晚于去程抵达，请重新选择航班")
+            return
+        }
         viewModelScope.launch {
             val plan = TripPlanEntity(
                 fromCity = candidate.originCity,
@@ -792,7 +836,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 returnStopover = retFlight.stopover,
                 returnLeftCount = retFlight.liveSecCardLeft,
                 note = note.trim(),
-                lastVerifiedAt = outFlight.liveQueriedAt ?: retFlight.liveQueriedAt
+                lastVerifiedAt = if (outFlight.liveQueriedAt != null && retFlight.liveQueriedAt != null) {
+                    minOf(outFlight.liveQueriedAt, retFlight.liveQueriedAt)
+                } else null
             )
             val newId = repo.savePlan(plan)
             val persisted = plan.copy(id = newId)
@@ -815,7 +861,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showMessage("请先在「我的」页登录账号后再核验余票")
             return
         }
-        viewModelScope.launch {
+        recheckPlanJob?.cancel()
+        recheckPlanJob = viewModelScope.launch {
             _recheckingPlanId.value = plan.id
             try {
                 val (outSeats, retSeats) = repo.refreshRoundTripSeats(
@@ -834,18 +881,15 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     targetFlightNo = plan.returnFlightNo,
                     targetDepTime = plan.returnDepTime
                 )
-                val outLeft = matchedOutLeft ?: 0
-                val retLeft = matchedRetLeft ?: 0
-
                 repo.updatePlan(
                     plan.copy(
-                        outboundLeftCount = outLeft,
-                        returnLeftCount = retLeft,
+                        outboundLeftCount = matchedOutLeft,
+                        returnLeftCount = matchedRetLeft,
                         lastVerifiedAt = System.currentTimeMillis()
                     )
                 )
-                val outDesc = if (matchedOutLeft != null) "去程 ${plan.outboundFlightNo} 余 $outLeft 张" else "去程 ${plan.outboundFlightNo} 当日未查到该班次"
-                val retDesc = if (matchedRetLeft != null) "返程 ${plan.returnFlightNo} 余 $retLeft 张" else "返程 ${plan.returnFlightNo} 当日未查到该班次"
+                val outDesc = if (matchedOutLeft != null) "去程 ${plan.outboundFlightNo} 余 $matchedOutLeft 张" else "去程 ${plan.outboundFlightNo} 当日未查到该班次"
+                val retDesc = if (matchedRetLeft != null) "返程 ${plan.returnFlightNo} 余 $matchedRetLeft 张" else "返程 ${plan.returnFlightNo} 当日未查到该班次"
                 showMessage("最新余票：$outDesc，$retDesc")
             } catch (c: CancellationException) {
                 throw c
@@ -869,6 +913,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         viewModelScope.launch {
+            val plan = repo.getPlanById(planId)
+            val triggerTime = Instant.ofEpochMilli(triggerAtMillis).atZone(ChinaClock.ZONE).toLocalDateTime()
+            if (plan == null || !PlanReminderTimes.hasRedeemableLeg(plan, triggerTime)) {
+                showMessage("所选提醒时间已超过行程兑换截止时间")
+                return@launch
+            }
             val entity = ReminderEntity(
                 planId = planId,
                 triggerAtMillis = triggerAtMillis,
@@ -907,14 +957,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun sendTestNotification() {
-        NotificationHelper.showReminderNotification(
+        val sent = NotificationHelper.showReminderNotification(
             context = app,
             reminderId = 999999L,
             planId = plans.value.firstOrNull()?.id ?: -1L,
             title = "畅飞卡测试提醒",
             message = "通知权限已就绪，抢票闹钟到点时会以同款高优先级卡片提醒你。"
         )
-        showMessage("已发送一条测试通知，请查看手机顶部状态栏")
+        showMessage(if (sent) "已发送一条测试通知，请查看手机顶部状态栏" else "测试通知未发出，请检查系统通知设置")
     }
 
     // ---- 第 4 栏：我的（账号、卡包、官方航线拉取与设置） ----
@@ -958,7 +1008,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             if (!silent) showMessage("请先登录账号后再获取官方出发城市")
             return
         }
-        viewModelScope.launch {
+        departureAirportsJob?.cancel()
+        departureAirportsJob = viewModelScope.launch {
             _departureAirportsLoading.value = true
             try {
                 val list = repo.syncOfficialDepartureAirports()
@@ -980,7 +1031,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun resyncUserCards() {
-        viewModelScope.launch {
+        cardSyncJob?.cancel()
+        cardSyncJob = viewModelScope.launch {
             _cardSyncLoading.value = true
             try {
                 val res = repo.api.resyncUserCards()
@@ -996,10 +1048,18 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
+    private fun saveActiveCard(grantTid: String, cardName: String): Boolean = try {
+        repo.authPrefs.selectActiveCard(grantTid, cardName)
+        true
+    } catch (e: IllegalStateException) {
+        showMessage("无法安全保存卡片，请稍后重试")
+        false
+    }
+
     fun selectActiveCard(grantTid: String, cardName: String) {
         val cleanTid = grantTid.trim()
         val prevTid = sessionState.value.secCardGrantTid.trim()
-        repo.authPrefs.selectActiveCard(cleanTid, cardName)
+        if (!saveActiveCard(cleanTid, cardName)) return
         if (prevTid.isNotBlank() && prevTid != cleanTid) {
             cancelAllBackgroundJobs()
             viewModelScope.launch {
@@ -1008,7 +1068,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showMessage("已切换畅飞卡：$cardName，旧卡航线与日历缓存已清理，请同步新卡适用航线")
             }
         } else {
-            showMessage("当前畅飞卡：$cardName ($cleanTid)")
+            showMessage("当前畅飞卡：$cardName (${UserSessionState.maskGrantId(cleanTid)})")
         }
     }
 
@@ -1019,7 +1079,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         val prevTid = sessionState.value.secCardGrantTid.trim()
-        repo.authPrefs.selectActiveCard(clean, sessionState.value.cardName)
+        if (!saveActiveCard(clean, sessionState.value.cardName)) return
         if (prevTid.isNotBlank() && prevTid != clean) {
             cancelAllBackgroundJobs()
             viewModelScope.launch {
@@ -1028,7 +1088,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showMessage("已更新畅飞卡授权 ID 并清理旧卡缓存，请重新同步适用航线")
             }
         } else {
-            showMessage("已确认畅飞卡授权 ID：$clean")
+            showMessage("已确认畅飞卡授权 ID：${UserSessionState.maskGrantId(clean)}")
         }
     }
 
@@ -1180,7 +1240,8 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 reloadAllCityAndRouteData()
                 val failNote = if (summary.failedCount > 0) "（${summary.failedCount} 项请求需重试）" else ""
                 showMessage(
-                    "全网同步完成：共 ${summary.totalOfficialRoutes} 条畅飞卡航线，已获取 ${summary.routesWithSchedules} 条时刻$failNote"
+                    "目录实查 ${summary.queriedAirports} 城、复用 ${summary.cachedAirports} 城；" +
+                        "日历实查 ${summary.queriedCalendars} 条、复用 ${summary.cachedCalendars} 条。现有 ${summary.totalOfficialRoutes} 条航线$failNote"
                 )
             } catch (_: CancellationException) {
                 withContext(NonCancellable) {
@@ -1219,28 +1280,25 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             showMessage("正在同步航线中，请稍候或先停止当前同步")
             return
         }
-        val targets = _networkState.value.allRoutes.filter {
-            it.availableDaysCount == 0 && it.soldOutDaysCount > 0
-        }
-        if (targets.isEmpty()) {
-            showMessage("当前全网暂无全部约满航线需要巡检")
-            return
-        }
-
         officialSyncJob = viewModelScope.launch {
-            _networkState.update {
-                it.copy(
-                    officialSyncing = true,
-                    syncingCityName = "约满航线巡检",
-                    syncDoneCount = 0,
-                    syncTotalCount = targets.size,
-                    officialSyncProgress = "准备巡检 ${targets.size} 条约满航线是否有退票或新开仓..."
-                )
-            }
             var done = 0
+            var total = 0
             var newlyAvailable = 0
             var pruned = 0
             try {
+                val targets = repo.getAllNetworkRoutes().filter {
+                    it.availableDaysCount == 0 && it.soldOutDaysCount > 0
+                }
+                if (targets.isEmpty()) {
+                    showMessage("当前全网暂无全部约满航线需要巡检")
+                    return@launch
+                }
+                total = targets.size
+                _networkState.update {
+                    it.copy(officialSyncing = true, syncingCityName = "约满航线巡检", syncDoneCount = 0,
+                        syncTotalCount = total, officialSyncProgress = "准备巡检 $total 条约满航线是否有退票或新开仓...")
+                }
+                val globalUnavailable = repo.getGlobalUnavailableDates()
                 for (r in targets) {
                     _networkState.update {
                         it.copy(
@@ -1251,12 +1309,12 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                     }
                     try {
                         val cal = repo.refreshRouteCalendar(r.fromCity, r.toCity)
-                        val availCount = cal.values.count { it == 1 }
-                        if (availCount > 0) {
+                        val window = RoundTripMatcher.calendarWindow(cal, ChinaClock.nowDateTime(), globalUnavailable)
+                        if (window.availableDaysCount > 0) {
                             newlyAvailable++
                             if (r.flights.isEmpty()) {
                                 suspendRunCatching {
-                                    repo.ensureRouteScheduleSampled(r.fromCity, r.toCity, cal)
+                                    repo.ensureRouteScheduleSampled(r.fromCity, r.toCity, window.days)
                                 }
                             }
                         }
@@ -1275,7 +1333,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 showMessage(summaryMsg)
             } catch (_: CancellationException) {
                 withContext(NonCancellable) { reloadAllCityAndRouteData() }
-                showMessage("已停止约满航线巡检（已完成 $done/${targets.size}）")
+                showMessage("已停止约满航线巡检（已完成 $done/$total）")
             } catch (e: Exception) {
                 withContext(NonCancellable) { reloadAllCityAndRouteData() }
                 showMessage("巡检约满航线中断：${e.message}")
@@ -1311,12 +1369,21 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     }
 
     fun cancelAllBackgroundJobs() {
+        closeRouteCalendarDetail()
         stopOfficialNetworkSync()
         stopBatchCalendarVerify()
-        calibrateJob?.cancel()
-        calibrateJob = null
         searchJob?.cancel()
         searchJob = null
+        singleRouteRefreshJob?.cancel()
+        singleRouteRefreshJob = null
+        verifySeatsJob?.cancel()
+        verifySeatsJob = null
+        recheckPlanJob?.cancel()
+        recheckPlanJob = null
+        cardSyncJob?.cancel()
+        cardSyncJob = null
+        departureAirportsJob?.cancel()
+        departureAirportsJob = null
     }
 
     fun logout() {

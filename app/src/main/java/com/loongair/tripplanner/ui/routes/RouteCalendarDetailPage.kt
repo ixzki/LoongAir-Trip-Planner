@@ -64,7 +64,7 @@ import com.loongair.tripplanner.ui.theme.LocalLoongPalette
 import com.loongair.tripplanner.ui.theme.LoongType
 import com.loongair.tripplanner.ui.theme.bounceOnTouch
 import com.loongair.tripplanner.ui.theme.pressScale
-import com.loongair.tripplanner.util.rememberChinaToday
+import com.loongair.tripplanner.util.rememberChinaDateTime
 import java.time.LocalDate
 import java.time.YearMonth
 
@@ -91,18 +91,19 @@ fun RouteCalendarDetailPage(
         }
     }
 
-    val today = rememberChinaToday()
+    val now = rememberChinaDateTime()
+    val today = now.toLocalDate()
     val fortyDays = remember(today) { (0L until 40L).map { today.plusDays(it) } }
     val groupedByMonth = remember(fortyDays) { fortyDays.groupBy { YearMonth.from(it) } }
     val visibleDateKeys = remember(fortyDays) { fortyDays.map { it.toString() }.toSet() }
-    val effectiveCalendar = remember(detailState.calendarByDate, detailState.globalUnavailableDates, fortyDays, today) {
+    val effectiveCalendar = remember(detailState.calendarByDate, detailState.globalUnavailableDates, fortyDays, now) {
         buildMap {
             fortyDays.forEach { d ->
                 val dateStr = d.toString()
                 val normalized = RoundTripMatcher.normalizeCalendarStatus(
                     rawStatus = detailState.calendarByDate[dateStr],
                     date = d,
-                    today = today,
+                    now = now,
                     globalUnavailableDates = detailState.globalUnavailableDates
                 )
                 if (normalized != null) {
@@ -236,7 +237,7 @@ fun RouteCalendarDetailPage(
                             }
                         }
                         Spacer(Modifier.height(12.dp))
-                    } else if (route.isCalendarSynced && route.availableDaysCount == 0 && route.soldOutDaysCount > 0) {
+                    } else if (route.hasSyncedCalendar && route.availableDaysCount == 0 && route.soldOutDaysCount > 0) {
                         Box(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -322,7 +323,6 @@ fun RouteCalendarDetailPage(
         item {
             Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                 SelectedDateSeatsCard(
-                    today = today,
                     dateStr = selectedDate,
                     calendarStatus = selectedStatus,
                     seats = selectedSeats,
@@ -337,7 +337,6 @@ fun RouteCalendarDetailPage(
             item(key = "month_${ym.year}_${ym.monthValue}") {
                 Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                     MonthAvailabilityCard(
-                        today = today,
                         yearMonth = ym,
                         datesInMonth = datesInMonth,
                         calendarByDate = visibleCalendar,
@@ -353,7 +352,6 @@ fun RouteCalendarDetailPage(
 
 @Composable
 private fun SelectedDateSeatsCard(
-    today: LocalDate,
     dateStr: String,
     calendarStatus: Int?,
     seats: List<SeatSnapshotEntity>,
@@ -363,10 +361,6 @@ private fun SelectedDateSeatsCard(
     val p = LocalLoongPalette.current
     val parsedDate = remember(dateStr) { runCatching { LocalDate.parse(dateStr) }.getOrNull() }
     val dowLabel = parsedDate?.let { RoundTripMatcher.dayOfWeekLabel(it.dayOfWeek.value) }.orEmpty()
-    val isWithinThreeDaysCutoff = parsedDate != null &&
-        parsedDate.isBefore(today.plusDays(3)) &&
-        calendarStatus != -4 &&
-        calendarStatus != -2
 
     SoftCard(cornerRadius = AppRadii.card, contentPadding = 16.dp) {
         Row(
@@ -391,7 +385,7 @@ private fun SelectedDateSeatsCard(
                     .pressScale(
                         scaleDown = AppPressScale.CONTROL,
                         haptic = true,
-                        enabled = !isQuerying,
+                        enabled = !isQuerying && (calendarStatus == null || calendarStatus !in -4..-1),
                         onClick = onRefreshSeats
                     )
                     .clip(RoundedCornerShape(AppRadii.full))
@@ -410,19 +404,6 @@ private fun SelectedDateSeatsCard(
         Spacer(Modifier.height(10.dp))
 
         when {
-            isQuerying -> {
-                Row(
-                    modifier = Modifier
-                        .fillMaxWidth()
-                        .padding(vertical = 8.dp),
-                    verticalAlignment = Alignment.CenterVertically,
-                    horizontalArrangement = Arrangement.spacedBy(10.dp)
-                ) {
-                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = p.primary)
-                    Text("正在拉取该日期的实时航班与畅飞卡余票...", style = LoongType.footnote, color = p.textSecondary)
-                }
-            }
-
             calendarStatus == -4 -> {
                 Text("官方日历显示该日暂无此航线航班。", style = LoongType.footnote, color = p.textSecondary)
             }
@@ -435,12 +416,27 @@ private fun SelectedDateSeatsCard(
                 )
             }
 
-            isWithinThreeDaysCutoff || calendarStatus == -3 -> {
+            calendarStatus == -3 -> {
                 Text(
-                    "该日期距起飞不足 3 天（已过前 3 天 23:40 兑换截止期），畅飞卡无法使用。",
+                    "该航班已过起飞前第 3 天北京时间 23:40 的兑换截止时间。",
                     style = LoongType.footnote,
                     color = p.textSecondary
                 )
+            }
+
+            calendarStatus == -1 -> {
+                Text("该日尚未开放畅飞卡兑换。", style = LoongType.footnote, color = p.warning)
+            }
+
+            isQuerying -> {
+                Row(
+                    modifier = Modifier.fillMaxWidth().padding(vertical = 8.dp),
+                    verticalAlignment = Alignment.CenterVertically,
+                    horizontalArrangement = Arrangement.spacedBy(10.dp)
+                ) {
+                    CircularProgressIndicator(modifier = Modifier.size(16.dp), strokeWidth = 2.dp, color = p.primary)
+                    Text("正在拉取该日期的实时航班与畅飞卡余票...", style = LoongType.footnote, color = p.textSecondary)
+                }
             }
 
             seats.isNotEmpty() -> {
@@ -522,7 +518,6 @@ private fun SelectedDateSeatsCard(
 
 @Composable
 private fun MonthAvailabilityCard(
-    today: LocalDate,
     yearMonth: YearMonth,
     datesInMonth: List<LocalDate>,
     calendarByDate: Map<String, Int>,
@@ -572,7 +567,6 @@ private fun MonthAvailabilityCard(
                         } else {
                             val dateStr = date.toString()
                             val status = calendarByDate[dateStr]
-                            val isWithinCutoff = date.isBefore(today.plusDays(3))
                             val cachedSeats = seatsByDate[dateStr]
                             val liveSum = cachedSeats?.let { list ->
                                 RoundTripMatcher.aggregateFlightSnapshots(list).sumOf { it.secCardLeft }
@@ -581,13 +575,13 @@ private fun MonthAvailabilityCard(
 
                             val (cellBg, dayColor, subText, subColor) = when {
                                 status == -2 -> Quad(p.dangerBg, p.textSecondary, "不可用", p.danger)
-                                status == -3 || (isWithinCutoff && status != -4) -> Quad(p.subtleSurface.copy(alpha = 0.75f), p.textTertiary, "截止", p.textTertiary)
+                                status == -3 -> Quad(p.subtleSurface.copy(alpha = 0.75f), p.textTertiary, "截止", p.textTertiary)
                                 status == -4 -> Quad(p.subtleSurface.copy(alpha = 0.55f), p.textTertiary.copy(alpha = 0.55f), "无班", p.textTertiary.copy(alpha = 0.55f))
+                                status == -1 -> Quad(p.warningBg.copy(alpha = 0.7f), p.textSecondary, "未开", p.warning)
                                 liveSum != null && liveSum > 0 -> Quad(p.successBg, p.textPrimary, "余$liveSum", p.success)
                                 liveSum != null && liveSum == 0 -> Quad(p.dangerBg, p.textPrimary, "余0", p.danger)
                                 status == 1 -> Quad(p.successBg, p.textPrimary, "可兑", p.success)
                                 status == 0 -> Quad(p.dangerBg.copy(alpha = 0.7f), p.textSecondary, "兑完", p.danger)
-                                status == -1 -> Quad(p.warningBg.copy(alpha = 0.7f), p.textSecondary, "未开", p.warning)
                                 else -> Quad(p.subtleSurface.copy(alpha = 0.7f), p.textSecondary, "·", p.textTertiary)
                             }
                             val animBorder by animateColorAsState(

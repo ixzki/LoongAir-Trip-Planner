@@ -79,6 +79,11 @@ interface CalendarCacheDao {
 
 @Dao
 interface SeatSnapshotDao {
+    companion object {
+        const val VISIBLE_SNAPSHOTS = """SELECT s.* FROM seat_snapshots s WHERE NOT EXISTS (
+            SELECT 1 FROM route_calendar c WHERE c.fromCity = s.fromCity AND c.toCity = s.toCity
+            AND c.flightDate = s.flightDate AND c.status BETWEEN -4 AND 0 AND c.updatedAt > s.queriedAt)"""
+    }
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun upsertAll(items: List<SeatSnapshotEntity>)
 
@@ -88,10 +93,13 @@ interface SeatSnapshotDao {
     @Query("DELETE FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate = :date")
     suspend fun deleteForRouteDate(fromCity: String, toCity: String, date: String)
 
-    @Query("SELECT * FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate = :date ORDER BY depTime ASC")
+    @Query("DELETE FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate IN (:dates) AND queriedAt < :requestStartedAt")
+    suspend fun deleteOlderForDates(fromCity: String, toCity: String, dates: List<String>, requestStartedAt: Long)
+
+    @Query(VISIBLE_SNAPSHOTS + " AND s.fromCity = :fromCity AND s.toCity = :toCity AND s.flightDate = :date ORDER BY s.depTime ASC")
     suspend fun getForRouteDate(fromCity: String, toCity: String, date: String): List<SeatSnapshotEntity>
 
-    @Query("SELECT * FROM seat_snapshots WHERE fromCity = :fromCity AND toCity = :toCity AND flightDate >= :minDate ORDER BY flightDate ASC, depTime ASC")
+    @Query(VISIBLE_SNAPSHOTS + " AND s.fromCity = :fromCity AND s.toCity = :toCity AND s.flightDate >= :minDate ORDER BY s.flightDate ASC, s.depTime ASC")
     suspend fun getAllForRoute(fromCity: String, toCity: String, minDate: String): List<SeatSnapshotEntity>
 
     @Query("SELECT * FROM seat_snapshots")
@@ -225,6 +233,24 @@ interface OfficialAirportDao {
 
     @Query("DELETE FROM official_airports")
     suspend fun clearAll()
+}
+
+@Dao
+interface NetworkSyncDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun record(sync: NetworkSyncEntity)
+
+    @Query("SELECT * FROM network_sync WHERE fetchedAt >= :since")
+    suspend fun since(since: Long): List<NetworkSyncEntity>
+
+    @Query("SELECT EXISTS(SELECT 1 FROM network_sync WHERE fromCity = :fromCity AND toCity = :toCity AND fetchedAt >= :since)")
+    suspend fun hasFetched(fromCity: String, toCity: String, since: Long): Boolean
+
+    @Query("DELETE FROM network_sync WHERE fromCity = :fromCity AND toCity = :toCity")
+    suspend fun delete(fromCity: String, toCity: String)
+
+    @Query("DELETE FROM network_sync")
+    suspend fun clear()
 }
 
 @Dao

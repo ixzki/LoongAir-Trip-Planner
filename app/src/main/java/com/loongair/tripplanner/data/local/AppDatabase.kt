@@ -17,9 +17,10 @@ import androidx.sqlite.db.SupportSQLiteDatabase
         ReminderEntity::class,
         OfficialRouteEntity::class,
         OfficialAirportEntity::class,
-        InvalidatedRouteEntity::class
+        InvalidatedRouteEntity::class,
+        NetworkSyncEntity::class
     ],
-    version = 6,
+    version = 7,
     exportSchema = true
 )
 abstract class AppDatabase : RoomDatabase() {
@@ -32,6 +33,7 @@ abstract class AppDatabase : RoomDatabase() {
     abstract fun officialRouteDao(): OfficialRouteDao
     abstract fun officialAirportDao(): OfficialAirportDao
     abstract fun invalidatedRouteDao(): InvalidatedRouteDao
+    abstract fun networkSyncDao(): NetworkSyncDao
 
     companion object {
         @Volatile
@@ -152,12 +154,21 @@ abstract class AppDatabase : RoomDatabase() {
             }
         }
 
+        internal val MIGRATION_6_7 = object : Migration(6, 7) {
+            override fun migrate(db: SupportSQLiteDatabase) {
+                // Old seed rows and live rows shared timestamps. Verify freshness on the next sync.
+                db.execSQL("CREATE TABLE IF NOT EXISTS network_sync (fromCity TEXT NOT NULL, toCity TEXT NOT NULL, fetchedAt INTEGER NOT NULL, PRIMARY KEY(fromCity, toCity))")
+                db.execSQL("UPDATE invalidated_routes SET reason = '当前畅飞卡不适用该航线' WHERE reason LIKE '%当前卡ID:%'")
+            }
+        }
+
         internal val ALL_MIGRATIONS = arrayOf(
             MIGRATION_1_2,
             MIGRATION_2_3,
             MIGRATION_3_4,
             MIGRATION_4_5,
-            MIGRATION_5_6
+            MIGRATION_5_6,
+            MIGRATION_6_7
         )
 
         fun getInstance(context: Context): AppDatabase {

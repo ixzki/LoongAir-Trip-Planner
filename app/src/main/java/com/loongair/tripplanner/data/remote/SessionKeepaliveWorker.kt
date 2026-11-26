@@ -36,7 +36,15 @@ class SessionKeepaliveWorker(
             SessionKeepaliveScheduler.cancel(applicationContext)
             return Result.success()
         }
-        return when (app.api.keepaliveSession(force = false)) {
+        val keepalive = try {
+            app.api.keepaliveSession(force = false)
+        } catch (e: kotlinx.coroutines.CancellationException) {
+            throw e
+        } catch (e: IllegalStateException) {
+            // 系统 Keystore 可能暂时不可用，保留凭据并交由 WorkManager 稍后重试。
+            KeepaliveResult.TransientError(e.message.orEmpty())
+        }
+        return when (keepalive) {
             is KeepaliveResult.Alive,
             is KeepaliveResult.Refreshed,
             is KeepaliveResult.SkippedFresh -> Result.success()

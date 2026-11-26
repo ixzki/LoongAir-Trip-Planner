@@ -91,6 +91,9 @@ data class CitySyncSummary(
 
 data class FullNetworkSyncSummary(
     val queriedAirports: Int,
+    val cachedAirports: Int,
+    val queriedCalendars: Int,
+    val cachedCalendars: Int,
     val totalOfficialRoutes: Int,
     val routesWithSchedules: Int,
     val failedCount: Int,

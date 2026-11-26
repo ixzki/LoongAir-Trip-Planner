@@ -25,7 +25,8 @@ data class UserSessionState(
     val homeCity: String = "",
     val themeStyle: String = "crimson",
     val detectedCards: List<DetectedCardInfo> = emptyList(),
-    val cardDiagnostic: String = ""
+    val cardDiagnostic: String = "",
+    val sessionGeneration: Long = 0
 ) {
     val maskedMobile: String
         get() = if (mobile.length == 11) "${mobile.take(3)}****${mobile.takeLast(4)}" else mobile
@@ -53,6 +54,7 @@ class AuthPrefs(
     )
 
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+    private var sessionGeneration = 0L
 
     init {
         migrateLegacyPlaintextIfNeeded()
@@ -70,6 +72,7 @@ class AuthPrefs(
 
     private fun SharedPreferences.Editor.putSecret(key: String, value: String): SharedPreferences.Editor {
         val enc = if (value.isEmpty()) "" else cipher.encrypt(value)
+        check(value.isEmpty() || enc.isNotEmpty()) { "无法安全保存凭据，请稍后重试" }
         return putString(key, enc)
     }
 
@@ -82,7 +85,12 @@ class AuthPrefs(
         for (key in SENSITIVE_KEYS) {
             val raw = prefs.getString(key, "").orEmpty()
             if (raw.isNotEmpty() && !cipher.isEncrypted(raw)) {
-                val enc = cipher.encrypt(raw)
+                val enc = try {
+                    cipher.encrypt(raw)
+                } catch (_: IllegalStateException) {
+                    // 暂时不可用时保留原值，下次启动重试迁移。
+                    continue
+                }
                 if (enc.isNotEmpty()) {
                     editor.putString(key, enc)
                     migrated = true
@@ -118,7 +126,8 @@ class AuthPrefs(
             homeCity = prefs.getString(KEY_HOME_CITY, "").orEmpty(),
             themeStyle = prefs.getString(KEY_THEME_STYLE, "crimson").orEmpty().ifBlank { "crimson" },
             detectedCards = cards,
-            cardDiagnostic = getSecret(KEY_CARD_DIAG)
+            cardDiagnostic = getSecret(KEY_CARD_DIAG),
+            sessionGeneration = sessionGeneration
         )
     }
 
@@ -135,8 +144,10 @@ class AuthPrefs(
         certNumber: String,
         updatedAt: String,
         detectedCards: List<DetectedCardInfo> = emptyList(),
-        cardDiagnostic: String = ""
-    ) {
+        cardDiagnostic: String = "",
+        expectedGeneration: Long = sessionGeneration
+    ): Boolean {
+        if (expectedGeneration != sessionGeneration) return false
         val cleanToken = token.removePrefix("SESSION=").trim()
         prefs.edit()
             .putSecret(KEY_TOKEN, cleanToken)
@@ -153,17 +164,22 @@ class AuthPrefs(
             .putSecret(KEY_CARDS_JSON, json.encodeToString(detectedCards))
             .putSecret(KEY_CARD_DIAG, cardDiagnostic)
             .apply()
+        sessionGeneration++
         _state.value = readState()
+        return true
     }
 
     @Synchronized
     fun updateCards(
+        expectedSession: UserSessionState,
         cards: List<DetectedCardInfo>,
         selectedTid: String,
         selectedName: String,
         diagnostic: String,
         updatedAt: String
-    ) {
+    ): Boolean {
+        if (current().sessionGeneration != expectedSession.sessionGeneration ||
+            current().secCardGrantTid != expectedSession.secCardGrantTid) return false
         prefs.edit()
             .putSecret(KEY_CARDS_JSON, json.encodeToString(cards))
             .putSecret(KEY_SCG_TID, selectedTid)
@@ -172,6 +188,7 @@ class AuthPrefs(
             .putString(KEY_UPDATED_AT, updatedAt)
             .apply()
         _state.value = readState()
+        return true
     }
 
     @Synchronized
@@ -184,7 +201,10 @@ class AuthPrefs(
     }
 
     @Synchronized
-    fun updateTokens(newToken: String, newRefreshToken: String, updatedAt: String) {
+    fun updateTokens(expectedSession: UserSessionState, newToken: String, newRefreshToken: String, updatedAt: String): Boolean {
+        val cur = current()
+        if (!cur.isLoggedIn || cur.sessionGeneration != expectedSession.sessionGeneration) return false
+        if (cur.sessionToken != expectedSession.sessionToken) return true // 同一登录的请求已轮换凭据
         val cleanToken = newToken.removePrefix("SESSION=").trim()
         prefs.edit()
             .putSecret(KEY_TOKEN, cleanToken)
@@ -193,6 +213,7 @@ class AuthPrefs(
             .putLong(KEY_LAST_KEEPALIVE_AT, System.currentTimeMillis())
             .apply()
         _state.value = readState()
+        return true
     }
 
     /**
@@ -204,10 +225,11 @@ class AuthPrefs(
         usedToken: String,
         rotatedSession: String? = null,
         updatedAt: String,
-        nowMillis: Long = System.currentTimeMillis()
+        nowMillis: Long = System.currentTimeMillis(),
+        expectedGeneration: Long = sessionGeneration
     ): Boolean {
         val cur = current()
-        if (!cur.isLoggedIn || cur.sessionToken.isBlank()) return false
+        if (!cur.isLoggedIn || cur.sessionToken.isBlank() || expectedGeneration != sessionGeneration) return false
         val cleanUsed = usedToken.removePrefix("SESSION=").trim()
         if (cleanUsed.isNotEmpty() && cur.sessionToken != cleanUsed) {
             return false
@@ -255,6 +277,7 @@ class AuthPrefs(
             .putString(KEY_THEME_STYLE, keepTheme)
             .putInt(KEY_BUNDLED_VERSION, keepBundleVer)
             .apply()
+        sessionGeneration++
         _state.value = readState()
     }
 

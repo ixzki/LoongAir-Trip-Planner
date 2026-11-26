@@ -7,6 +7,8 @@ import android.net.Uri
 import android.os.Build
 import android.provider.CalendarContract
 import android.provider.Settings
+import android.app.NotificationManager
+import android.content.ActivityNotFoundException
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
@@ -62,6 +64,7 @@ import androidx.compose.material3.rememberTimePickerState
 import androidx.compose.runtime.Composable
 import androidx.compose.runtime.DisposableEffect
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
@@ -79,6 +82,7 @@ import androidx.compose.ui.text.style.TextAlign
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
 import com.loongair.tripplanner.alarm.NotificationHelper
+import com.loongair.tripplanner.alarm.PlanReminderTimes
 import com.loongair.tripplanner.data.local.ReminderEntity
 import com.loongair.tripplanner.data.local.TripPlanEntity
 import com.loongair.tripplanner.data.repository.RoundTripMatcher
@@ -103,10 +107,10 @@ import com.loongair.tripplanner.ui.theme.bounceOnTouch
 import com.loongair.tripplanner.ui.theme.pressHighlight
 import com.loongair.tripplanner.ui.theme.pressScale
 import com.loongair.tripplanner.util.ChinaClock
+import com.loongair.tripplanner.util.rememberChinaDateTime
 import java.time.Instant
 import java.time.LocalDate
 import java.time.LocalDateTime
-import java.time.LocalTime
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 
@@ -164,21 +168,45 @@ fun PlansScreen(
         onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
 
+    val openNotificationSettings = {
+        val manager = context.getSystemService(NotificationManager::class.java)
+        val action = if (manager?.areNotificationsEnabled() == true) {
+            Settings.ACTION_CHANNEL_NOTIFICATION_SETTINGS
+        } else {
+            Settings.ACTION_APP_NOTIFICATION_SETTINGS
+        }
+        val intent = Intent(action)
+            .putExtra(Settings.EXTRA_APP_PACKAGE, context.packageName)
+            .putExtra(Settings.EXTRA_CHANNEL_ID, NotificationHelper.CHANNEL_ID)
+        try {
+            context.startActivity(intent)
+        } catch (_: ActivityNotFoundException) {
+            viewModel.showMessage("请在系统设置中开启畅飞行的抢票提醒通知")
+        }
+    }
     val notifLauncher = rememberLauncherForActivityResult(
         ActivityResultContracts.RequestPermission()
     ) { granted ->
-        hasNotifPerm = granted
+        hasNotifPerm = NotificationHelper.hasNotificationPermission(context)
         if (!granted) {
-            viewModel.showMessage("未授予通知权限，抢票闹钟到点时可能无法弹出提醒")
+            openNotificationSettings()
+        }
+    }
+    val requestNotifications = {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU && !NotificationHelper.hasRuntimePermission(context)) {
+            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+        } else {
+            openNotificationSettings()
         }
     }
 
     var reminderTargetPlan by remember { mutableStateOf<TripPlanEntity?>(null) }
 
     val remindersByPlan = remember(reminders) { reminders.groupBy { it.planId } }
-    val pendingCount = remember(reminders) {
-        val now = System.currentTimeMillis()
-        reminders.count { it.enabled && !it.fired && it.triggerAtMillis > now }
+    val now = rememberChinaDateTime()
+    val pendingCount = remember(reminders, now) {
+        val nowMillis = now.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
+        reminders.count { it.enabled && !it.fired && it.triggerAtMillis > nowMillis }
     }
 
     LacquerPullRefreshBox(
@@ -203,13 +231,7 @@ fun PlansScreen(
                         HeroCircleActionButton(
                             icon = Icons.Default.NotificationsActive,
                             contentDescription = "发测试提醒",
-                            onClick = {
-                                if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                    notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                } else {
-                                    viewModel.sendTestNotification()
-                                }
-                            }
+                            onClick = { if (hasNotifPerm) viewModel.sendTestNotification() else requestNotifications() }
                         )
                     }
                 ) {
@@ -257,13 +279,7 @@ fun PlansScreen(
                                             .pressScale(
                                                 scaleDown = AppPressScale.CONTROL,
                                                 haptic = true,
-                                                onClick = {
-                                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                                                        notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                                                    } else {
-                                                        viewModel.sendTestNotification()
-                                                    }
-                                                }
+                                                onClick = { if (hasNotifPerm) viewModel.sendTestNotification() else requestNotifications() }
                                             )
                                             .clip(RoundedCornerShape(AppRadii.full))
                                             .background(p.primarySoftBg)
@@ -276,9 +292,9 @@ fun PlansScreen(
 
                                 Spacer(Modifier.height(12.dp))
                                 Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
-                                    if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                                    if (!hasNotifPerm) {
                                         OutlinedButton(
-                                            onClick = { notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS) },
+                                            onClick = requestNotifications,
                                             shape = RoundedCornerShape(12.dp),
                                             border = BorderStroke(1.dp, p.separator),
                                             contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
@@ -315,6 +331,7 @@ fun PlansScreen(
                             val firstPlan = plans.first()
                             TripPlanCard(
                                 plan = firstPlan,
+                                now = now,
                                 reminders = remindersByPlan[firstPlan.id].orEmpty(),
                                 canExactAlarm = canExactAlarm,
                                 isHighlighted = highlightedPlanId == firstPlan.id,
@@ -322,7 +339,7 @@ fun PlansScreen(
                                 floating = true,
                                 onRecheckSeats = { viewModel.recheckPlanLiveSeats(firstPlan) },
                                 onAddReminderClick = { reminderTargetPlan = firstPlan },
-                                onExportCalendar = { exportPlanToSystemCalendar(context, firstPlan) },
+                                onExportCalendar = { exportPlanToSystemCalendar(context, firstPlan, viewModel::showMessage) },
                                 onDeletePlan = { viewModel.deleteTripPlan(firstPlan) },
                                 onToggleReminder = { viewModel.toggleReminder(it) },
                                 onDeleteReminder = { viewModel.deleteReminder(it) }
@@ -357,13 +374,14 @@ fun PlansScreen(
                     Box(modifier = Modifier.padding(horizontal = AppSpace.groupInset)) {
                         TripPlanCard(
                             plan = plan,
+                            now = now,
                             reminders = planReminders,
                             canExactAlarm = canExactAlarm,
                             isHighlighted = highlightedPlanId == plan.id,
                             isRechecking = recheckingId == plan.id,
                             onRecheckSeats = { viewModel.recheckPlanLiveSeats(plan) },
                             onAddReminderClick = { reminderTargetPlan = plan },
-                            onExportCalendar = { exportPlanToSystemCalendar(context, plan) },
+                            onExportCalendar = { exportPlanToSystemCalendar(context, plan, viewModel::showMessage) },
                             onDeletePlan = { viewModel.deleteTripPlan(plan) },
                             onToggleReminder = { viewModel.toggleReminder(it) },
                             onDeleteReminder = { viewModel.deleteReminder(it) }
@@ -380,13 +398,7 @@ fun PlansScreen(
                 HeroCircleActionButton(
                     icon = Icons.Default.NotificationsActive,
                     contentDescription = "发测试提醒",
-                    onClick = {
-                        if (!hasNotifPerm && Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-                            notifLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
-                        } else {
-                            viewModel.sendTestNotification()
-                        }
-                    }
+                    onClick = { if (hasNotifPerm) viewModel.sendTestNotification() else requestNotifications() }
                 )
             }
         )
@@ -395,6 +407,7 @@ fun PlansScreen(
     reminderTargetPlan?.let { plan ->
         AddReminderDialog(
             plan = plan,
+            now = now,
             onDismiss = { reminderTargetPlan = null },
             onAddReminder = { triggerMillis, label, title, msg ->
                 viewModel.addReminder(
@@ -443,6 +456,7 @@ private fun EmptyPlansCard(floating: Boolean) {
 @Composable
 private fun TripPlanCard(
     plan: TripPlanEntity,
+    now: LocalDateTime,
     reminders: List<ReminderEntity>,
     canExactAlarm: Boolean,
     isHighlighted: Boolean,
@@ -513,7 +527,7 @@ private fun TripPlanCard(
                             color = p.textPrimary
                         )
                     }
-                    SeatCountTag(plan.outboundLeftCount, plan.outboundDate)
+                    SeatCountTag(plan.outboundLeftCount, plan.outboundDate, now, plan.lastVerifiedAt != null)
                 }
                 HorizontalDivider(thickness = AppSpace.hairline, color = p.separator)
                 Row(
@@ -529,7 +543,7 @@ private fun TripPlanCard(
                             color = p.textPrimary
                         )
                     }
-                    SeatCountTag(plan.returnLeftCount, plan.returnDate)
+                    SeatCountTag(plan.returnLeftCount, plan.returnDate, now, plan.lastVerifiedAt != null)
                 }
                 plan.lastVerifiedAt?.let { ts ->
                     val verifiedStr = Instant.ofEpochMilli(ts)
@@ -572,6 +586,7 @@ private fun TripPlanCard(
 
             Button(
                 onClick = onAddReminderClick,
+                enabled = PlanReminderTimes.hasRedeemableLeg(plan, now),
                 shape = RoundedCornerShape(14.dp),
                 contentPadding = PaddingValues(horizontal = 10.dp, vertical = 6.dp),
                 modifier = Modifier
@@ -586,6 +601,7 @@ private fun TripPlanCard(
 
             FilledTonalButton(
                 onClick = onExportCalendar,
+                enabled = PlanReminderTimes.nextCalendarTime(plan, now) != null,
                 shape = RoundedCornerShape(14.dp),
                 contentPadding = PaddingValues(horizontal = 12.dp, vertical = 6.dp),
                 modifier = Modifier
@@ -614,11 +630,12 @@ private fun TripPlanCard(
                 )
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
+                    val nowMillis = now.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
                     reminders.forEach { r ->
                         val triggerDt = Instant.ofEpochMilli(r.triggerAtMillis)
                             .atZone(ChinaClock.ZONE)
                             .format(DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm"))
-                        val isExpired = r.fired || r.triggerAtMillis <= System.currentTimeMillis()
+                        val isExpired = r.fired || r.triggerAtMillis <= nowMillis
                         Row(
                             modifier = Modifier
                                 .fillMaxWidth()
@@ -674,21 +691,20 @@ private fun TripPlanCard(
 }
 
 @Composable
-private fun SeatCountTag(count: Int?, flightDateStr: String) {
+private fun SeatCountTag(count: Int?, flightDateStr: String, now: LocalDateTime, hasChecked: Boolean) {
     val p = LocalLoongPalette.current
-    val today = ChinaClock.today()
     val parsedDate = remember(flightDateStr) { runCatching { LocalDate.parse(flightDateStr) }.getOrNull() }
     val normalized = parsedDate?.let {
         RoundTripMatcher.normalizeCalendarStatus(
             rawStatus = null,
             date = it,
-            today = today
+            now = now
         )
     }
     val (txt, bg, fg) = when {
         normalized == -2 -> Triple("不可用", p.dangerBg, p.danger)
         normalized == -3 -> Triple("已截止", p.dangerBg, p.danger)
-        count == null -> Triple("未核验", p.cardBg, p.textTertiary)
+        count == null -> Triple(if (hasChecked) "班次未确认" else "未核验", p.cardBg, p.textTertiary)
         count > 0 -> Triple("畅飞余 $count", p.successBg, p.success)
         else -> Triple("暂无余票", p.dangerBg, p.danger)
     }
@@ -704,14 +720,18 @@ private fun SeatCountTag(count: Int?, flightDateStr: String) {
 @Composable
 private fun AddReminderDialog(
     plan: TripPlanEntity,
+    now: LocalDateTime,
     onDismiss: () -> Unit,
     onAddReminder: (triggerAtMillis: Long, label: String, title: String, message: String) -> Unit
 ) {
     val p = LocalLoongPalette.current
-    val suggestions = remember(plan.id) { RoundTripMatcher.buildReminderSuggestions(plan) }
+    val suggestions = remember(plan, now) {
+        RoundTripMatcher.buildReminderSuggestions(plan, now.atZone(ChinaClock.ZONE).toInstant().toEpochMilli())
+    }
     var customDate by remember { mutableStateOf(ChinaClock.today().plusDays(1)) }
-    var customHour by remember { mutableStateOf(9) }
-    var customMinute by remember { mutableStateOf(55) }
+    var customHour by remember { mutableIntStateOf(9) }
+    var customMinute by remember { mutableIntStateOf(55) }
+    val customTime = customDate.atTime(customHour, customMinute)
     var customLabel by remember { mutableStateOf("自定义抢票提醒") }
     var showDatePicker by remember { mutableStateOf(false) }
     var showTimePicker by remember { mutableStateOf(false) }
@@ -802,12 +822,12 @@ private fun AddReminderDialog(
 
                 Button(
                     onClick = {
-                        val dt = LocalDateTime.of(customDate, LocalTime.of(customHour, customMinute))
-                        val millis = dt.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
+                        val millis = customTime.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
                         val title = "抢票提醒：${plan.fromCity} ⇄ ${plan.toCity}"
                         val msg = "去程 ${plan.outboundDate} ${plan.outboundFlightNo}(${plan.outboundDepTime}) / 返程 ${plan.returnDate} ${plan.returnFlightNo}(${plan.returnDepTime})，请及时查票兑换！"
                         onAddReminder(millis, customLabel.ifBlank { "自定义提醒" }, title, msg)
                     },
+                    enabled = customTime.isAfter(now) && PlanReminderTimes.hasRedeemableLeg(plan, customTime),
                     shape = RoundedCornerShape(AppRadii.full),
                     modifier = Modifier
                         .fillMaxWidth()
@@ -862,15 +882,13 @@ private fun AddReminderDialog(
     }
 }
 
-private fun exportPlanToSystemCalendar(context: Context, plan: TripPlanEntity) {
-    val today = ChinaClock.today()
-    val outDate = runCatching { LocalDate.parse(plan.outboundDate) }.getOrNull() ?: today
-    val openDate = outDate.minusDays(30)
-    val startDate = if (openDate.isAfter(today)) openDate else today.plusDays(1)
-    val startMillis = LocalDateTime.of(startDate, LocalTime.of(9, 55))
-        .atZone(ChinaClock.ZONE)
-        .toInstant()
-        .toEpochMilli()
+private fun exportPlanToSystemCalendar(context: Context, plan: TripPlanEntity, showMessage: (String) -> Unit) {
+    val time = PlanReminderTimes.nextCalendarTime(plan, ChinaClock.nowDateTime())
+    if (time == null) {
+        showMessage("去返程均无可用的抢票提醒时间")
+        return
+    }
+    val startMillis = time.atZone(ChinaClock.ZONE).toInstant().toEpochMilli()
 
     val intent = Intent(Intent.ACTION_INSERT).apply {
         data = CalendarContract.Events.CONTENT_URI
@@ -884,5 +902,9 @@ private fun exportPlanToSystemCalendar(context: Context, plan: TripPlanEntity) {
                 if (plan.note.isNotBlank()) "备注：${plan.note}" else ""
         )
     }
-    runCatching { context.startActivity(intent) }
+    try {
+        context.startActivity(intent)
+    } catch (_: ActivityNotFoundException) {
+        showMessage("本机没有可写入的系统日历应用")
+    }
 }

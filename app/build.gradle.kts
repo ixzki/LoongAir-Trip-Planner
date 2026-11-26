@@ -1,3 +1,5 @@
+import java.security.KeyStore
+import java.security.MessageDigest
 import java.util.Properties
 
 plugins {
@@ -16,6 +18,33 @@ val localProps = Properties().apply {
 fun propOrEnv(key: String): String? =
     (localProps.getProperty(key) ?: System.getenv(key))?.takeIf { it.isNotBlank() }
 
+val unsignedRelease = providers.gradleProperty("allowUnsignedRelease").orNull?.toBooleanStrict() ?: false
+val keystorePath = propOrEnv("LOONGAIR_KEYSTORE_PATH")
+val keystorePassword = propOrEnv("LOONGAIR_KEYSTORE_PASSWORD")
+val releaseKeyAlias = propOrEnv("LOONGAIR_KEY_ALIAS")
+val releaseKeyPassword = propOrEnv("LOONGAIR_KEY_PASSWORD")
+val pinnedCertificate = propOrEnv("LOONGAIR_RELEASE_CERT_SHA256")
+val releaseStore = keystorePath?.let { file(it) }
+
+val verifyReleaseSigningInputs = tasks.register("verifyReleaseSigningInputs") {
+    onlyIf { !unsignedRelease }
+    doLast {
+        check(releaseStore?.isFile == true && keystorePassword != null &&
+            releaseKeyAlias != null && releaseKeyPassword != null && pinnedCertificate != null) {
+            "正式包需要 LOONGAIR_KEYSTORE_PATH、LOONGAIR_KEYSTORE_PASSWORD、LOONGAIR_KEY_ALIAS、" +
+                "LOONGAIR_KEY_PASSWORD 和 LOONGAIR_RELEASE_CERT_SHA256。验证 R8 构建请传 -PallowUnsignedRelease=true。"
+        }
+        val pin = pinnedCertificate.replace(":", "").trim()
+        check(pin.matches(Regex("[a-fA-F0-9]{64}"))) { "LOONGAIR_RELEASE_CERT_SHA256 必须是 64 位十六进制指纹。" }
+        val store = KeyStore.getInstance(releaseStore!!, keystorePassword.toCharArray())
+        check(store.isKeyEntry(releaseKeyAlias)) { "所选 alias 缺少发布私钥。" }
+        val cert = store.getCertificate(releaseKeyAlias)
+        val digest = MessageDigest.getInstance("SHA-256").digest(cert.encoded)
+            .joinToString("") { "%02x".format(it) }
+        check(digest.equals(pin, ignoreCase = true)) { "发布密钥的证书与固定 SHA-256 指纹不匹配。" }
+    }
+}
+
 android {
     namespace = "com.loongair.tripplanner"
     compileSdk = 35
@@ -24,8 +53,8 @@ android {
         applicationId = "com.loongair.tripplanner"
         minSdk = 26
         targetSdk = 35
-        versionCode = 19
-        versionName = "1.8.2"
+        versionCode = 20
+        versionName = "1.8.3"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
     }
@@ -35,18 +64,18 @@ android {
         val verName = versionName
         outputs.configureEach {
             val out = this as? com.android.build.gradle.internal.api.BaseVariantOutputImpl
-            out?.outputFileName = "ChangfeiXing-v${verName}-${buildTypeName}.apk"
+            val suffix = if (buildTypeName == "release" && unsignedRelease) "release-unsigned" else buildTypeName
+            out?.outputFileName = "ChangfeiXing-v${verName}-${suffix}.apk"
         }
     }
 
     signingConfigs {
-        val ksPath = propOrEnv("LOONGAIR_KEYSTORE_PATH")
-        if (ksPath != null && file(ksPath).exists()) {
+        if (!unsignedRelease && releaseStore?.isFile == true) {
             create("release") {
-                storeFile = file(ksPath)
-                storePassword = propOrEnv("LOONGAIR_KEYSTORE_PASSWORD")
-                keyAlias = propOrEnv("LOONGAIR_KEY_ALIAS")
-                keyPassword = propOrEnv("LOONGAIR_KEY_PASSWORD")
+                storeFile = releaseStore
+                storePassword = keystorePassword
+                keyAlias = releaseKeyAlias
+                keyPassword = releaseKeyPassword
             }
         }
     }
@@ -56,7 +85,6 @@ android {
             isMinifyEnabled = true
             isShrinkResources = true
             signingConfig = signingConfigs.findByName("release")
-                ?: signingConfigs.getByName("debug")
             proguardFiles(
                 getDefaultProguardFile("proguard-android-optimize.txt"),
                 "proguard-rules.pro"
@@ -89,6 +117,10 @@ android {
             excludes += "/META-INF/{AL2.0,LGPL2.1}"
         }
     }
+}
+
+tasks.matching { it.name in setOf("packageRelease", "packageReleaseBundle", "signReleaseBundle") }.configureEach {
+    dependsOn(verifyReleaseSigningInputs)
 }
 
 ksp {
@@ -127,4 +159,6 @@ dependencies {
     debugImplementation(libs.androidx.ui.tooling)
     testImplementation(libs.junit)
     testImplementation(libs.kotlinx.coroutines.test)
+    androidTestImplementation(libs.androidx.test.runner)
+    androidTestImplementation(libs.androidx.test.junit)
 }

@@ -5,11 +5,19 @@ import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
 import android.os.Build
+import com.loongair.tripplanner.data.local.AppDatabase
 import com.loongair.tripplanner.data.local.ReminderEntity
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.withContext
 
 class ReminderScheduler(private val context: Context) {
 
     private val alarmManager = context.getSystemService(Context.ALARM_SERVICE) as AlarmManager
+
+    suspend fun restorePending() = withContext(Dispatchers.IO) {
+        val reminders = AppDatabase.getInstance(context).reminderDao().getPendingActive(System.currentTimeMillis())
+        reminders.forEach { schedule(it) }
+    }
 
     fun canScheduleExactAlarms(): Boolean {
         return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {

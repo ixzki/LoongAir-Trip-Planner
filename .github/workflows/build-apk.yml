@@ -3,95 +3,128 @@ name: Build & Release Android APK
 on:
   push:
     branches: [ main, master ]
-    tags:
-      - 'v*'
+    tags: [ 'v*' ]
   pull_request:
     branches: [ main, master ]
   workflow_dispatch:
     inputs:
       version:
-        description: '发布版本号标签（例如 v1.8.1，留空则自动读取 app/build.gradle.kts 的 versionName）'
+        description: '正式发布时填写已有标签（如 v1.8.3），留空只验证构建'
         required: false
         default: ''
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
   build:
-    name: Test, Lint & Build APKs
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Set up JDK 17
-        uses: actions/setup-java@v4
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-java@v4
         with:
           java-version: '17'
-          distribution: 'temurin'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
 
-      - name: Setup Gradle
-        uses: gradle/actions/setup-gradle@v4
-
-      - name: Run unit tests, Lint & build Debug + R8 Release APKs
-        run: ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease --console=plain
-
-      - name: Upload Debug APK
-        uses: actions/upload-artifact@v4
+      - name: Test, lint and build Debug and unsigned R8 APKs
+        run: ./gradlew testDebugUnitTest lintDebug assembleDebug assembleRelease -PallowUnsignedRelease=true --console=plain
+      - uses: actions/upload-artifact@v4
         with:
           name: ChangfeiXing-Debug-APK
-          path: app/build/outputs/apk/debug/ChangfeiXing-*.apk
+          path: app/build/outputs/apk/debug/*-debug.apk
           if-no-files-found: error
-
-      - name: Upload Release APK (R8 Minified)
-        uses: actions/upload-artifact@v4
+      - uses: actions/upload-artifact@v4
         with:
-          name: ChangfeiXing-Release-APK
-          path: app/build/outputs/apk/release/ChangfeiXing-*.apk
+          name: ChangfeiXing-Unsigned-R8-APK
+          path: app/build/outputs/apk/release/*-release-unsigned.apk
           if-no-files-found: error
 
   release:
-    name: Publish GitHub Release
-    needs: [ build ]
-    if: startsWith(github.ref, 'refs/tags/v') || github.event_name == 'workflow_dispatch'
+    needs: build
+    if: startsWith(github.ref, 'refs/tags/v') || (github.event_name == 'workflow_dispatch' && inputs.version != '')
     runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
-      - name: Checkout Code
-        uses: actions/checkout@v4
-
-      - name: Download Built APKs
-        uses: actions/download-artifact@v4
+      - uses: actions/checkout@v4
         with:
-          path: release_assets
-
-      - name: Prepare Release Tag & Checksums
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Check release tag and source revision
         id: meta
+        env:
+          INPUT_TAG: ${{ inputs.version }}
         run: |
-          if [[ "${{ github.ref }}" == refs/tags/v* ]]; then
-            TAG_NAME="${GITHUB_REF#refs/tags/}"
-          elif [[ -n "${{ github.event.inputs.version }}" ]]; then
-            TAG_NAME="${{ github.event.inputs.version }}"
-          else
-            VER=$(grep -E 'versionName\s*=' app/build.gradle.kts | head -n1 | sed -E 's/.*"([^"]+)".*/\1/')
-            TAG_NAME="v${VER}"
+          set -euo pipefail
+          version=$(sed -nE 's/^[[:space:]]*versionName = "([^"]+)"[[:space:]]*$/\1/p' app/build.gradle.kts)
+          [[ "$version" =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          tag="v$version"
+          if [[ "$GITHUB_REF" == refs/tags/* && "$GITHUB_REF_NAME" != "$tag" ]] ||
+             [[ -n "$INPUT_TAG" && "$INPUT_TAG" != "$tag" ]]; then
+            echo "::error::Release tag must match app version $tag"
+            exit 1
           fi
-          echo "tag=${TAG_NAME}" >> "$GITHUB_OUTPUT"
+          if [[ "$(git rev-parse --verify "refs/tags/$tag^{commit}")" != "$(git rev-parse HEAD)" ]]; then
+            echo "::error::Tag $tag must exist and point to the checked-out commit"
+            exit 1
+          fi
+          echo "tag=$tag" >> "$GITHUB_OUTPUT"
+          echo "version=$version" >> "$GITHUB_OUTPUT"
 
+      - uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: temurin
+      - uses: gradle/actions/setup-gradle@v4
+
+      - name: Sign R8 release with the project keystore
+        env:
+          LOONGAIR_KEYSTORE_BASE64: ${{ secrets.LOONGAIR_KEYSTORE_BASE64 }}
+          LOONGAIR_KEYSTORE_PASSWORD: ${{ secrets.LOONGAIR_KEYSTORE_PASSWORD }}
+          LOONGAIR_KEY_ALIAS: ${{ secrets.LOONGAIR_KEY_ALIAS }}
+          LOONGAIR_KEY_PASSWORD: ${{ secrets.LOONGAIR_KEY_PASSWORD }}
+          LOONGAIR_RELEASE_CERT_SHA256: ${{ vars.LOONGAIR_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          : "${LOONGAIR_KEYSTORE_BASE64:?Missing project signing keystore}"
+          umask 077
+          export LOONGAIR_KEYSTORE_PATH="$RUNNER_TEMP/loongair-release.keystore"
+          trap 'rm -f -- "$LOONGAIR_KEYSTORE_PATH"' EXIT
+          printf '%s' "$LOONGAIR_KEYSTORE_BASE64" | base64 --decode > "$LOONGAIR_KEYSTORE_PATH"
+          unset LOONGAIR_KEYSTORE_BASE64
+          ./gradlew --no-daemon assembleRelease --console=plain
+
+      - name: Verify final APK certificate and manifest, then generate checksum
+        env:
+          RELEASE_VERSION: ${{ steps.meta.outputs.version }}
+          PINNED_SHA256: ${{ vars.LOONGAIR_RELEASE_CERT_SHA256 }}
+        run: |
+          set -euo pipefail
+          apk="app/build/outputs/apk/release/ChangfeiXing-v${RELEASE_VERSION}-release.apk"
+          build_tools=$(find "$ANDROID_HOME/build-tools" -mindepth 1 -maxdepth 1 -type d | sort -V | tail -1)
+          "$build_tools/apksigner" verify --verbose --print-certs "$apk" > "$RUNNER_TEMP/loongair-cert.txt"
+          mapfile -t signers < <(sed -nE 's/^Signer #[0-9]+ certificate SHA-256 digest: ([a-fA-F0-9]+)$/\1/p' "$RUNNER_TEMP/loongair-cert.txt")
+          pin=$(printf '%s' "$PINNED_SHA256" | tr -d '[:space:]:')
+          [[ "$pin" =~ ^[a-fA-F0-9]{64}$ && "${#signers[@]}" == 1 ]]
+          [[ "${signers[0],,}" == "${pin,,}" ]] || { echo "::error::Unexpected APK signer"; exit 1; }
+          package=$("$build_tools/aapt" dump badging "$apk" | sed -n '1p')
+          [[ "$package" == *"name='com.loongair.tripplanner'"* && "$package" == *"versionName='$RELEASE_VERSION'"* ]] ||
+            { echo "::error::APK manifest does not match the release tag or app ID"; exit 1; }
           mkdir -p dist_release
-          cp release_assets/ChangfeiXing-Release-APK/*.apk dist_release/
-          cp release_assets/ChangfeiXing-Debug-APK/*.apk dist_release/
+          cp "$apk" dist_release/
           (cd dist_release && sha256sum *.apk > SHA256SUMS.txt)
-          ls -lh dist_release
 
-      - name: Create or Update GitHub Release
-        uses: softprops/action-gh-release@v2
+      - uses: softprops/action-gh-release@v2
         with:
           tag_name: ${{ steps.meta.outputs.tag }}
-          name: "畅飞行 ${{ steps.meta.outputs.tag }}"
+          name: 畅飞行 ${{ steps.meta.outputs.tag }}
           body_path: docs/RELEASE_NOTES.md
           files: |
-            dist_release/*.apk
+            dist_release/*-release.apk
             dist_release/SHA256SUMS.txt
+          fail_on_unmatched_files: true
           draft: false
           prerelease: false

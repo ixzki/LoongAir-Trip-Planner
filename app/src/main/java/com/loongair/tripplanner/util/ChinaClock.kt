@@ -1,15 +1,18 @@
 package com.loongair.tripplanner.util
 
 import androidx.compose.runtime.Composable
-import androidx.compose.runtime.DisposableEffect
+import androidx.compose.runtime.LaunchedEffect
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.setValue
 import androidx.lifecycle.Lifecycle
-import androidx.lifecycle.LifecycleEventObserver
 import androidx.lifecycle.compose.LocalLifecycleOwner
+import androidx.lifecycle.repeatOnLifecycle
 import kotlinx.coroutines.CancellationException
+import kotlinx.coroutines.delay
+import kotlinx.coroutines.isActive
+import java.time.Duration
 import java.time.LocalDate
 import java.time.LocalDateTime
 import java.time.ZoneId
@@ -35,22 +38,23 @@ object ChinaClock {
  * 避免使用静态 `remember { LocalDate.now() }` 导致跨零点后日历窗口陈旧。
  */
 @Composable
-fun rememberChinaToday(): LocalDate {
-    var today by remember { mutableStateOf(ChinaClock.today()) }
+fun rememberChinaToday(): LocalDate = rememberChinaDateTime().toLocalDate()
+
+@Composable
+fun rememberChinaDateTime(): LocalDateTime {
+    var now by remember { mutableStateOf(ChinaClock.nowDateTime()) }
     val lifecycleOwner = LocalLifecycleOwner.current
-    DisposableEffect(lifecycleOwner) {
-        val observer = LifecycleEventObserver { _, event ->
-            if (event == Lifecycle.Event.ON_RESUME) {
-                val latest = ChinaClock.today()
-                if (latest != today) {
-                    today = latest
-                }
+    LaunchedEffect(lifecycleOwner) {
+        lifecycleOwner.lifecycle.repeatOnLifecycle(Lifecycle.State.RESUMED) {
+            while (isActive) {
+                val current = ChinaClock.nowDateTime()
+                now = current
+                val nextMinute = current.plusMinutes(1).withSecond(0).withNano(0)
+                delay(Duration.between(current, nextMinute).toMillis().coerceAtLeast(1))
             }
         }
-        lifecycleOwner.lifecycle.addObserver(observer)
-        onDispose { lifecycleOwner.lifecycle.removeObserver(observer) }
     }
-    return today
+    return now
 }
 
 /**

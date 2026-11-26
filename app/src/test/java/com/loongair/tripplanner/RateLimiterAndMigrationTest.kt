@@ -55,12 +55,13 @@ class RateLimiterAndMigrationTest {
         } as SupportSQLiteDatabase
 
         val migrations = AppDatabase.ALL_MIGRATIONS
-        assertEquals(5, migrations.size)
+        assertEquals(6, migrations.size)
         assertEquals(1 to 2, migrations[0].startVersion to migrations[0].endVersion)
         assertEquals(2 to 3, migrations[1].startVersion to migrations[1].endVersion)
         assertEquals(3 to 4, migrations[2].startVersion to migrations[2].endVersion)
         assertEquals(4 to 5, migrations[3].startVersion to migrations[3].endVersion)
         assertEquals(5 to 6, migrations[4].startVersion to migrations[4].endVersion)
+        assertEquals(6 to 7, migrations[5].startVersion to migrations[5].endVersion)
 
         migrations.forEach { it.migrate(fakeDb) }
         assertTrue(executedSql.any { it.contains("CREATE TABLE IF NOT EXISTS official_routes") })
@@ -90,5 +91,9 @@ class RateLimiterAndMigrationTest {
 
         assertEquals(1, state.filteredRoutes.size)
         assertEquals("TFU", state.filteredRoutes.first().toIata)
+        assertFalse(r1.hasSyncedCalendar)
+        val staleSynced = r1.copy(isCalendarSynced = false, hasSyncedCalendar = true)
+        assertFalse(staleSynced.isCalendarSynced)
+        assertTrue(staleSynced.hasSyncedCalendar)
     }
 }

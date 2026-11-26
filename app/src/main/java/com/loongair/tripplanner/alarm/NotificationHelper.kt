@@ -1,6 +1,7 @@
 package com.loongair.tripplanner.alarm
 
 import android.Manifest
+import android.annotation.SuppressLint
 import android.app.NotificationChannel
 import android.app.NotificationManager
 import android.app.PendingIntent
@@ -44,15 +45,14 @@ object NotificationHelper {
     }
 
     fun hasNotificationPermission(context: Context): Boolean {
-        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) == PackageManager.PERMISSION_GRANTED
-        } else {
-            true
-        }
+        val manager = context.getSystemService(NotificationManager::class.java) ?: return false
+        return hasRuntimePermission(context) && manager.areNotificationsEnabled() &&
+            manager.getNotificationChannel(CHANNEL_ID)?.importance?.let { it != NotificationManager.IMPORTANCE_NONE } == true
     }
+
+    fun hasRuntimePermission(context: Context): Boolean =
+        Build.VERSION.SDK_INT < Build.VERSION_CODES.TIRAMISU ||
+            ContextCompat.checkSelfPermission(context, Manifest.permission.POST_NOTIFICATIONS) == PackageManager.PERMISSION_GRANTED
 
     fun sanitizeTitle(rawTitle: String): String {
         return rawTitle
@@ -122,22 +122,16 @@ object NotificationHelper {
         }
     }
 
+    @SuppressLint("MissingPermission") // hasNotificationPermission checks POST_NOTIFICATIONS before posting.
     fun showReminderNotification(
         context: Context,
         reminderId: Long,
         planId: Long,
         title: String,
         message: String
-    ) {
+    ): Boolean {
         ensureChannel(context)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU &&
-            ContextCompat.checkSelfPermission(
-                context,
-                Manifest.permission.POST_NOTIFICATIONS
-            ) != PackageManager.PERMISSION_GRANTED
-        ) {
-            return
-        }
+        if (!hasNotificationPermission(context)) return false
 
         val cleanTitle = sanitizeTitle(title)
         val badgeLabel = resolveBadgeLabel(cleanTitle)
@@ -190,11 +184,14 @@ object NotificationHelper {
             .setContentIntent(pendingIntent)
             .build()
 
-        runCatching {
+        return try {
             NotificationManagerCompat.from(context).notify(
                 reqCode,
                 notification
             )
+            true
+        } catch (_: SecurityException) {
+            false
         }
     }
 }

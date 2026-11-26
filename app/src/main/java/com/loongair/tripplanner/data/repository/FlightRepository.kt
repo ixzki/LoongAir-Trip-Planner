@@ -7,6 +7,7 @@ import com.loongair.tripplanner.data.local.AuthPrefs
 import com.loongair.tripplanner.data.local.CalendarCacheEntity
 import com.loongair.tripplanner.data.local.FlightRouteEntity
 import com.loongair.tripplanner.data.local.InvalidatedRouteEntity
+import com.loongair.tripplanner.data.local.NetworkSyncEntity
 import com.loongair.tripplanner.data.local.OfficialAirportEntity
 import com.loongair.tripplanner.data.local.OfficialRouteEntity
 import com.loongair.tripplanner.data.local.ROUTE_SOURCE_BUNDLED
@@ -34,6 +35,7 @@ import kotlinx.coroutines.flow.Flow
 import kotlinx.coroutines.withContext
 import kotlinx.serialization.json.Json
 import java.time.LocalDate
+import java.time.LocalDateTime
 import kotlin.random.Random
 
 data class NetworkRouteSummary(
@@ -51,8 +53,87 @@ data class NetworkRouteSummary(
     val isCalendarSynced: Boolean = false,
     val soldOutDaysCount: Int = 0,
     val hasOperatingDaysInCalendar: Boolean = false,
-    val dataSource: String = ROUTE_SOURCE_OFFICIAL
+    val dataSource: String = ROUTE_SOURCE_OFFICIAL,
+    val hasSyncedCalendar: Boolean = isCalendarSynced
 )
+
+/** Keep the old schedule for weekdays for which the service supplied no flight details. */
+internal fun mergeSampledWeekdays(
+    previous: List<FlightRouteEntity>,
+    observed: List<FlightRouteEntity>,
+    sampledDays: Set<Int>
+): List<FlightRouteEntity> {
+    val unverified = previous.mapNotNull { flight ->
+        val remaining = flight.frequency.ifBlank { "1234567" }
+            .filter { it in '1'..'7' && it.digitToInt() !in sampledDays }
+        if (remaining.isEmpty()) null else flight.copy(frequency = remaining)
+    }
+    return (unverified + observed)
+        .groupBy { Triple(it.flightNo, it.depTime, it.arrTime) }
+        .values.map { rows ->
+            val frequency = rows.flatMap { it.frequency.toList() }.distinct().sorted().joinToString("")
+            rows.last().copy(frequency = frequency)
+        }.sortedBy { it.depTime }
+}
+
+/** Merge a single day's observed seat snapshot flights into known schedules keyed by (flightNo, depTime, arrTime). */
+internal fun mergeSingleDayObservedSeats(
+    knownRoutes: List<FlightRouteEntity>,
+    observed: List<FlightRouteEntity>,
+    dow: Int
+): List<FlightRouteEntity> {
+    val dowChar = dow.digitToChar()
+    val observedByKey = observed
+        .distinctBy { Triple(it.flightNo, it.depTime, it.arrTime) }
+        .associateBy { Triple(it.flightNo, it.depTime, it.arrTime) }
+    val observedNos = observedByKey.keys.map { it.first }.toSet()
+    val matchedKeys = mutableSetOf<Triple<String, String, String>>()
+    val merged = mutableListOf<FlightRouteEntity>()
+
+    for (r in knownRoutes) {
+        val key = Triple(r.flightNo, r.depTime, r.arrTime)
+        val digits = r.frequency.filter { it in '1'..'7' }.toCollection(mutableSetOf())
+        if (key in observedByKey) {
+            matchedKeys.add(key)
+            digits.add(dowChar)
+            val obs = observedByKey.getValue(key)
+            merged.add(
+                r.copy(
+                    duration = obs.duration.ifBlank { r.duration },
+                    aircraft = obs.aircraft.ifBlank { r.aircraft },
+                    stopover = obs.stopover.ifBlank { r.stopover },
+                    frequency = digits.sorted().joinToString("")
+                )
+            )
+        } else if (r.flightNo in observedNos) {
+            digits.remove(dowChar)
+            if (digits.isNotEmpty()) {
+                merged.add(r.copy(frequency = digits.sorted().joinToString("")))
+            }
+        } else {
+            if (digits.size > 1) {
+                digits.remove(dowChar)
+            }
+            val nextFreq = if (r.frequency.isBlank()) "" else digits.sorted().joinToString("")
+            merged.add(r.copy(frequency = nextFreq))
+        }
+    }
+
+    for ((key, obs) in observedByKey) {
+        if (key !in matchedKeys) {
+            merged.add(obs.copy(frequency = dowChar.toString()))
+        }
+    }
+
+    return merged
+        .groupBy { Triple(it.flightNo, it.depTime, it.arrTime) }
+        .values.map { rows ->
+            val frequency = rows.flatMap { it.frequency.toList() }.filter { it in '1'..'7' }
+                .distinct().sorted().joinToString("")
+            rows.last().copy(frequency = frequency)
+        }
+        .sortedBy { it.depTime }
+}
 
 class FlightRepository(
     private val context: Context,
@@ -61,6 +142,8 @@ class FlightRepository(
     val api: LoongAirApi
 ) {
     private val json = Json { ignoreUnknownKeys = true; isLenient = true }
+
+    private fun freshSince() = System.currentTimeMillis() - 6L * 3600_000L
 
     @Volatile
     private var cachedProvinces: List<ChinaProvincePath>? = null
@@ -122,6 +205,7 @@ class FlightRepository(
         val now = System.currentTimeMillis()
         db.withTransaction {
             if (forceReset) {
+                db.networkSyncDao().clear()
                 db.calendarCacheDao().clearAll()
                 db.seatSnapshotDao().clearAll()
                 db.invalidatedRouteDao().clearAll()
@@ -165,7 +249,7 @@ class FlightRepository(
                     toCity = r.toCity,
                     toAirport = r.toAirport,
                     toIata = r.toIata,
-                    updatedAt = now,
+                    updatedAt = 0L,
                     dataSource = ROUTE_SOURCE_BUNDLED
                 )
             }
@@ -210,7 +294,7 @@ class FlightRepository(
                                 toCity = route.toCity,
                                 flightDate = dateStr,
                                 status = -2,
-                                updatedAt = now
+                                updatedAt = 0L
                             )
                         }
                     }
@@ -227,27 +311,15 @@ class FlightRepository(
         authPrefs.setBundledNetworkVersion(bundle.version)
     }
 
-    /**
-     * 汇总畅飞卡全网不可使用日期（status = -2 官方适用窗口外/春运五一暑运国庆屏蔽）：
-     * 结合官方适用日期规则、内置核对日期以及本机实网拉取的全网一致 -2 屏蔽日。
-     */
-    suspend fun getGlobalUnavailableDates(): Set<String> = withContext(Dispatchers.IO) {
-        val today = ChinaClock.today()
+    private val bundledUnavailableDates by lazy { readBundledNetworkAsset()?.unavailableDates.orEmpty() }
+
+    /** 仅使用产品层面的屏蔽日期，单条航线的 -2 保留在该航线的日历。 */
+    suspend fun getGlobalUnavailableDates(today: LocalDate = ChinaClock.today()): Set<String> = withContext(Dispatchers.IO) {
         val todayStr = today.toString()
         val result = sortedSetOf<String>()
         result.addAll(RoundTripMatcher.officialBlackoutDates(today))
-        readBundledNetworkAsset()?.unavailableDates
-            ?.filter { it >= todayStr }
-            ?.forEach { result.add(it) }
+        bundledUnavailableDates.filterTo(result) { it >= todayStr }
 
-        val byDate = db.calendarCacheDao().getAllFromDate(todayStr).groupBy { it.flightDate }
-        for ((dateStr, entries) in byDate) {
-            val hasOpenOrSoldOut = entries.any { it.status == 1 || it.status == 0 }
-            val inappCount = entries.count { it.status == -2 }
-            if (!hasOpenOrSoldOut && inappCount > 0 && inappCount * 2 >= entries.size) {
-                result.add(dateStr)
-            }
-        }
         result
     }
 
@@ -261,6 +333,7 @@ class FlightRepository(
     ) = withContext(Dispatchers.IO) {
         val now = System.currentTimeMillis()
         db.withTransaction {
+            db.networkSyncDao().delete(fromCity, toCity)
             db.officialRouteDao().deleteOne(fromCity, toCity)
             db.flightRouteDao().deleteForRoute(fromCity, toCity)
             db.calendarCacheDao().deleteForRoute(fromCity, toCity)
@@ -364,12 +437,12 @@ class FlightRepository(
         val updated = allFlights.mapNotNull { route ->
             val cals = allCalsByPair["${route.fromCity}|${route.toCity}"] ?: return@mapNotNull null
             val calMap = cals.associate { it.flightDate to it.status }
-            val validDows = RoundTripMatcher.deriveFrequencyFromCalendar(calMap)
-                .filter { it in '1'..'7' }
-                .toSet()
-            if (validDows.isEmpty()) return@mapNotNull null
-            val currentDows = route.frequency.filter { it in '1'..'7' }.toSet()
-            val cleaned = currentDows.intersect(validDows).sorted().joinToString("")
+            // 缺样、屏蔽和约满均不能证明停飞。只清理有重复无航班证据的星期。
+            val noServiceDays = calMap.entries.groupBy { (date, _) ->
+                runCatching { LocalDate.parse(date).dayOfWeek.value.digitToChar() }.getOrNull()
+            }.filterValues { days -> days.size >= 2 && days.all { it.value == -4 } }.keys
+            if (noServiceDays.isEmpty()) return@mapNotNull null
+            val cleaned = route.frequency.filter { it in '1'..'7' && it !in noServiceDays }
             if (cleaned.isNotEmpty() && cleaned != route.frequency) {
                 route.copy(frequency = cleaned)
             } else null
@@ -634,15 +707,14 @@ class FlightRepository(
                 )
             }
 
-            val prevRoutes = db.officialRouteDao().getByOrigin(fromCity)
             val liveToSet = routeEntities.map { it.toCity }.toSet()
-            val removedRoutes = prevRoutes.filter { it.toCity !in liveToSet }
-
             db.withTransaction {
+                val removedRoutes = db.officialRouteDao().getByOrigin(fromCity).filter { it.toCity !in liveToSet }
                 if (airportEntities.isNotEmpty()) {
                     db.officialAirportDao().upsertAll(airportEntities)
                 }
                 for (old in removedRoutes) {
+                    db.networkSyncDao().delete(fromCity, old.toCity)
                     db.flightRouteDao().deleteForRoute(fromCity, old.toCity)
                     db.calendarCacheDao().deleteForRoute(fromCity, old.toCity)
                     db.seatSnapshotDao().deleteForRoute(fromCity, old.toCity)
@@ -663,6 +735,7 @@ class FlightRepository(
                     }
                 }
                 db.officialAirportDao().deleteOrphans()
+                db.networkSyncDao().record(NetworkSyncEntity(fromCity, "", now))
             }
             routeEntities
         }
@@ -803,9 +876,16 @@ class FlightRepository(
             r.getOrDefault(emptyList())
         } else emptyList()
 
-        val oddMap = oddSeats.distinctBy { "${it.flightNo}|${it.depTime}" }.associateBy { it.flightNo.ifBlank { it.depTime } }
-        val evenMap = evenSeats.distinctBy { "${it.flightNo}|${it.depTime}" }.associateBy { it.flightNo.ifBlank { it.depTime } }
-        val allKeys = linkedSetOf<String>().apply {
+        if (!allOk || (oddDate != null && oddSeats.isEmpty()) || (evenDate != null && evenSeats.isEmpty())) {
+            return false
+        }
+        val oddMap = oddSeats
+            .distinctBy { Triple(it.flightNo.ifBlank { it.depTime }, it.depTime, it.arrTime) }
+            .associateBy { Triple(it.flightNo.ifBlank { it.depTime }, it.depTime, it.arrTime) }
+        val evenMap = evenSeats
+            .distinctBy { Triple(it.flightNo.ifBlank { it.depTime }, it.depTime, it.arrTime) }
+            .associateBy { Triple(it.flightNo.ifBlank { it.depTime }, it.depTime, it.arrTime) }
+        val allKeys = linkedSetOf<Triple<String, String, String>>().apply {
             addAll(oddMap.keys)
             addAll(evenMap.keys)
         }
@@ -885,19 +965,14 @@ class FlightRepository(
         onProgress: suspend (done: Int, total: Int, text: String) -> Unit = { _, _, _ -> },
         onBatchUpdated: suspend () -> Unit = {}
     ): FullNetworkSyncSummary = withContext(Dispatchers.IO) {
-        val recentThreshold = System.currentTimeMillis() - 6L * 3600_000L
+        val recentThreshold = freshSince()
         val existingOfficial = db.officialRouteDao().getAll()
-        // 仅将拥有 >=2 条航线或近6小时刚全量同步过的出发地视为已完成目录拉取（避免单条返程被误判为已拉全目录）
-        val freshOrigins = existingOfficial
-            .groupBy { it.fromCity }
-            .filterValues { list ->
-                val maxTs = list.maxOfOrNull { it.updatedAt } ?: 0L
-                maxTs >= recentThreshold && existingOfficial.size >= 300
-            }
-            .keys
-
+        val freshOrigins = db.networkSyncDao().since(recentThreshold)
+            .filter { it.toCity.isEmpty() }.map { it.fromCity }.toSet()
+        var failedCount = 0
         if (freshOrigins.isEmpty()) {
-            runSyncStep { syncOfficialDepartureAirports() }
+            val airports = runSyncStep { syncOfficialDepartureAirports() }
+            if (airports.getOrNull().isNullOrEmpty()) failedCount++
         }
         val seedCities = linkedSetOf<String>().apply {
             db.officialAirportDao().getAll().forEach { add(it.cityName) }
@@ -907,8 +982,9 @@ class FlightRepository(
             }
         }
         val queue = ArrayDeque<String>(seedCities.filter { it !in freshOrigins })
-        val visited = linkedSetOf<String>().apply { addAll(freshOrigins) }
-        var failedCount = 0
+        val cachedOrigins = seedCities.intersect(freshOrigins)
+        val visited = cachedOrigins.toMutableSet()
+        var queriedAirports = 0
 
         while (queue.isNotEmpty()) {
             val origin = queue.removeFirst().trim()
@@ -917,6 +993,7 @@ class FlightRepository(
             val totalEst = visited.size + queue.size
             onProgress(visited.size, totalEst, "全网机场遍历 (${visited.size}/$totalEst)：$origin 出发...")
 
+            queriedAirports++
             val res = runSyncStep { syncOfficialRoutesForOrigin(origin) }
             if (res.isFailure) {
                 failedCount++
@@ -937,27 +1014,26 @@ class FlightRepository(
         onBatchUpdated()
 
         val allRoutes = db.officialRouteDao().getAll()
-        val todayStr = ChinaClock.today().toString()
-        val freshCalPairs = db.calendarCacheDao().getAllFromDate(todayStr)
-            .groupBy { "${it.fromCity}|${it.toCity}" }
-            .filterValues { list -> (list.maxOfOrNull { it.updatedAt } ?: 0L) >= recentThreshold }
-            .keys
-            .toMutableSet()
+        val freshCalPairs = db.networkSyncDao().since(recentThreshold)
+            .filter { it.toCity.isNotEmpty() }.map { it.fromCity to it.toCity }.toSet()
+        var queriedCalendars = 0
+        var cachedCalendars = 0
 
         for ((idx, r) in allRoutes.withIndex()) {
-            val key = "${r.fromCity}|${r.toCity}"
+            val key = r.fromCity to r.toCity
             onProgress(idx + 1, allRoutes.size, "同步全网时刻 (${idx + 1}/${allRoutes.size})：${r.fromCity} → ${r.toCity}")
             var touched = false
             if (key !in freshCalPairs) {
+                queriedCalendars++
                 val calRes = runSyncStep { refreshRouteCalendar(r.fromCity, r.toCity) }
                 if (calRes.isFailure) {
                     if (calRes.exceptionOrNull() !is RouteInvalidatedException) {
                         failedCount++
                     }
-                } else {
-                    freshCalPairs.add(key)
                 }
                 touched = true
+            } else {
+                cachedCalendars++
             }
             val existingFlights = db.flightRouteDao().getRoutes(r.fromCity, r.toCity)
             if (existingFlights.isEmpty()) {
@@ -991,7 +1067,10 @@ class FlightRepository(
         val finalRoutes = db.officialRouteDao().getAll()
         val flightPairs = db.flightRouteDao().getAll().map { "${it.fromCity}|${it.toCity}" }.toSet()
         FullNetworkSyncSummary(
-            queriedAirports = visited.size,
+            queriedAirports = queriedAirports,
+            cachedAirports = cachedOrigins.size,
+            queriedCalendars = queriedCalendars,
+            cachedCalendars = cachedCalendars,
             totalOfficialRoutes = finalRoutes.size,
             routesWithSchedules = finalRoutes.count { "${it.fromCity}|${it.toCity}" in flightPairs },
             failedCount = failedCount,
@@ -1007,17 +1086,16 @@ class FlightRepository(
         toCity: String
     ): List<FlightRouteEntity> = withContext(Dispatchers.IO) {
         var calMap = getRouteCalendarMap(fromCity, toCity)
-        if (calMap.isEmpty()) {
-            calMap = runSyncStep { refreshRouteCalendar(fromCity, toCity) }.getOrDefault(emptyMap())
+        if (calMap.isEmpty() || !db.networkSyncDao().hasFetched(fromCity, toCity, freshSince())) {
+            calMap = refreshRouteCalendar(fromCity, toCity)
         }
         val sampleByDow = RoundTripMatcher.pickWeeklySampleDates(calMap)
-        if (sampleByDow.isEmpty()) return@withContext db.flightRouteDao().getRoutes(fromCity, toCity)
+        check(sampleByDow.isNotEmpty()) { "日历暂无可采样日期，已保留原班表" }
 
         val flightsByDow = linkedMapOf<Int, List<LiveFlightSeat>>()
         for ((idx, entry) in sampleByDow.entries.withIndex()) {
             val (dow, dateStr) = entry
-            val seats = runSyncStep { refreshRouteSeats(fromCity, toCity, dateStr, updateFlightRoutes = false) }
-                .getOrDefault(emptyList())
+            val seats = refreshRouteSeats(fromCity, toCity, dateStr, updateFlightRoutes = false)
             if (seats.isNotEmpty()) {
                 flightsByDow[dow] = seats
             }
@@ -1025,7 +1103,7 @@ class FlightRepository(
                 delay(Random.nextLong(80, 180))
             }
         }
-        if (flightsByDow.isEmpty()) return@withContext db.flightRouteDao().getRoutes(fromCity, toCity)
+        check(flightsByDow.isNotEmpty()) { "未取得任何实际班次，已保留原班表" }
 
         val fromIata = CityIataMapper.toApiIata(fromCity)
         val toIata = CityIataMapper.toApiIata(toCity)
@@ -1047,10 +1125,12 @@ class FlightRepository(
             )
         }
         db.withTransaction {
+            val old = db.flightRouteDao().getRoutes(fromCity, toCity)
+            val merged = mergeSampledWeekdays(old, entities, flightsByDow.keys)
             db.flightRouteDao().deleteForRoute(fromCity, toCity)
-            db.flightRouteDao().insertAll(entities)
+            db.flightRouteDao().insertAll(merged)
+            merged
         }
-        entities
     }
 
     private suspend fun persistSyncedFlights(
@@ -1088,16 +1168,22 @@ class FlightRepository(
     /**
      * 构建第 1 栏「航线」全网聚合列表（100% 来源于已同步的官方航线、官方时刻与 60 天日历；未同步前为空）
      */
-    suspend fun getAllNetworkRoutes(): List<NetworkRouteSummary> = withContext(Dispatchers.IO) {
+    suspend fun getAllNetworkRoutes(now: LocalDateTime = ChinaClock.nowDateTime()): List<NetworkRouteSummary> = withContext(Dispatchers.IO) {
         val allFlights = db.flightRouteDao().getAll()
         val officialRoutes = db.officialRouteDao().getAll()
         if (officialRoutes.isEmpty() && allFlights.isEmpty()) return@withContext emptyList()
 
         val metaMap = getSyncedCityMetadata().associateBy { it.city }
-        val todayStr = ChinaClock.today().toString()
+        val todayStr = now.toLocalDate().toString()
+        val globalUnavailable = getGlobalUnavailableDates(now.toLocalDate())
         val allCalsByPair = db.calendarCacheDao().getAllFromDate(todayStr)
             .groupBy { "${it.fromCity}|${it.toCity}" }
 
+        val allCalendarSyncs = db.networkSyncDao().since(1L).filter { it.toCity.isNotEmpty() }
+        val recentThreshold = freshSince()
+        val freshCalendars = allCalendarSyncs.filter { it.fetchedAt >= recentThreshold }
+            .map { it.fromCity to it.toCity }.toSet()
+        val syncedCalendars = allCalendarSyncs.map { it.fromCity to it.toCity }.toSet()
         val flightsByPair = allFlights.groupBy { "${it.fromCity}|${it.toCity}" }
         val officialByPair = officialRoutes.associateBy { "${it.fromCity}|${it.toCity}" }
 
@@ -1113,9 +1199,7 @@ class FlightRepository(
             val fromMeta = metaMap[fromCity]
             val toMeta = metaMap[toCity]
             val routeCals = allCalsByPair[key].orEmpty()
-            val availCals = routeCals.filter { it.status == 1 }
-            val soldOutCnt = routeCals.count { it.status == 0 }
-            val hasOperating = routeCals.any { it.status == 1 || it.status == 0 || it.status == -1 || it.status == -3 }
+            val window = RoundTripMatcher.calendarWindow(routeCals.associate { it.flightDate to it.status }, now, globalUnavailable)
 
             val fromAirportName = listOfNotNull(
                 off?.fromAirport?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
@@ -1138,14 +1222,16 @@ class FlightRepository(
                 toAirport = toAirportName,
                 toIata = off?.toIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(toCity),
                 flights = flights,
-                isOfficialSynced = off != null,
-                availableDaysCount = availCals.size,
-                nearestAvailableDate = availCals.firstOrNull()?.flightDate,
-                officialUpdatedAt = off?.updatedAt,
-                isCalendarSynced = routeCals.isNotEmpty(),
-                soldOutDaysCount = soldOutCnt,
-                hasOperatingDaysInCalendar = hasOperating,
-                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL
+                isOfficialSynced = off?.dataSource == ROUTE_SOURCE_OFFICIAL,
+                availableDaysCount = window.availableDaysCount,
+                nearestAvailableDate = window.nearestAvailableDate,
+                officialUpdatedAt = off?.takeIf { it.dataSource == ROUTE_SOURCE_OFFICIAL }?.updatedAt,
+                isCalendarSynced = routeCals.isNotEmpty() && (fromCity to toCity) in freshCalendars,
+                soldOutDaysCount = window.soldOutDaysCount,
+                hasOperatingDaysInCalendar = window.hasOperatingDays,
+                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL,
+                hasSyncedCalendar = routeCals.isNotEmpty() &&
+                    ((fromCity to toCity) in syncedCalendars || routeCals.any { it.updatedAt > 0L })
             )
         }.sortedWith(
             compareByDescending<NetworkRouteSummary> { it.availableDaysCount }
@@ -1158,19 +1244,23 @@ class FlightRepository(
     /**
      * 单航线增量摘要构建：避免查单日余票、刷新单条日历或校准单条班期时重读全量数据库。
      */
-    suspend fun getSingleNetworkRouteSummary(fromCity: String, toCity: String): NetworkRouteSummary? =
+    suspend fun getSingleNetworkRouteSummary(
+        fromCity: String, toCity: String, now: LocalDateTime = ChinaClock.nowDateTime()
+    ): NetworkRouteSummary? =
         withContext(Dispatchers.IO) {
             val off = db.officialRouteDao().getOne(fromCity, toCity)
             val flights = db.flightRouteDao().getRoutes(fromCity, toCity).sortedBy { it.depTime }
             if (off == null && flights.isEmpty()) return@withContext null
 
+            val calendarFresh = db.networkSyncDao().hasFetched(fromCity, toCity, freshSince())
+            val calendarEverFetched = calendarFresh || db.networkSyncDao().hasFetched(fromCity, toCity, 1L)
             val fromAp = db.officialAirportDao().getByCity(fromCity)
             val toAp = db.officialAirportDao().getByCity(toCity)
-            val todayStr = ChinaClock.today().toString()
+            val todayStr = now.toLocalDate().toString()
             val routeCals = db.calendarCacheDao().getAllForRoute(fromCity, toCity, todayStr)
-            val availCals = routeCals.filter { it.status == 1 }
-            val soldOutCnt = routeCals.count { it.status == 0 }
-            val hasOperating = routeCals.any { it.status == 1 || it.status == 0 || it.status == -1 || it.status == -3 }
+            val window = RoundTripMatcher.calendarWindow(
+                routeCals.associate { it.flightDate to it.status }, now, getGlobalUnavailableDates(now.toLocalDate())
+            )
 
             val fromAirportName = listOfNotNull(
                 off?.fromAirport?.takeIf { it.isNotBlank() && it != "${fromCity}机场" },
@@ -1193,14 +1283,15 @@ class FlightRepository(
                 toAirport = toAirportName,
                 toIata = off?.toIata?.takeIf { CityIataMapper.isAsciiIataCode(it) } ?: CityIataMapper.toApiIata(toCity),
                 flights = flights,
-                isOfficialSynced = off != null,
-                availableDaysCount = availCals.size,
-                nearestAvailableDate = availCals.firstOrNull()?.flightDate,
-                officialUpdatedAt = off?.updatedAt,
-                isCalendarSynced = routeCals.isNotEmpty(),
-                soldOutDaysCount = soldOutCnt,
-                hasOperatingDaysInCalendar = hasOperating,
-                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL
+                isOfficialSynced = off?.dataSource == ROUTE_SOURCE_OFFICIAL,
+                availableDaysCount = window.availableDaysCount,
+                nearestAvailableDate = window.nearestAvailableDate,
+                officialUpdatedAt = off?.takeIf { it.dataSource == ROUTE_SOURCE_OFFICIAL }?.updatedAt,
+                isCalendarSynced = routeCals.isNotEmpty() && calendarFresh,
+                soldOutDaysCount = window.soldOutDaysCount,
+                hasOperatingDaysInCalendar = window.hasOperatingDays,
+                dataSource = off?.dataSource ?: ROUTE_SOURCE_OFFICIAL,
+                hasSyncedCalendar = routeCals.isNotEmpty() && (calendarEverFetched || routeCals.any { it.updatedAt > 0L })
             )
         }
 
@@ -1295,6 +1386,7 @@ class FlightRepository(
 
     suspend fun refreshRouteCalendar(fromCity: String, toCity: String): Map<String, Int> =
         withContext(Dispatchers.IO) {
+            val requestStartedAt = System.currentTimeMillis()
             val calMap = try {
                 api.getCalendar(fromCity, toCity)
             } catch (e: Exception) {
@@ -1302,7 +1394,7 @@ class FlightRepository(
                     e !is ApiRateLimitException &&
                     RoundTripMatcher.isInapplicableRouteErrorMessage(e.message)
                 ) {
-                    invalidateAndDeleteRoute(fromCity, toCity, e.message ?: "当前畅飞卡不适用该航线")
+                    invalidateAndDeleteRoute(fromCity, toCity, "当前畅飞卡不适用该航线")
                     throw RouteInvalidatedException(fromCity, toCity, "当前畅飞卡不适用该航线")
                 }
                 throw e
@@ -1321,12 +1413,18 @@ class FlightRepository(
                     toCity = toCity,
                     flightDate = dateStr,
                     status = status,
-                    updatedAt = now
+                    updatedAt = requestStartedAt
                 )
             }
-            if (entities.isNotEmpty()) {
+            check(entities.isNotEmpty()) { "本次未取得有效日历，已保留上次数据" }
+            db.withTransaction {
                 db.calendarCacheDao().upsertAll(entities)
+                val unavailableDates = entities.filter { it.status in -4..0 }.map { it.flightDate }
+                if (unavailableDates.isNotEmpty()) {
+                    db.seatSnapshotDao().deleteOlderForDates(fromCity, toCity, unavailableDates, requestStartedAt)
+                }
                 db.invalidatedRouteDao().deleteOne(fromCity, toCity)
+                db.networkSyncDao().record(NetworkSyncEntity(fromCity, toCity, now))
             }
             calMap
         }
@@ -1338,6 +1436,7 @@ class FlightRepository(
         updateFlightRoutes: Boolean = true
     ): List<LiveFlightSeat> = withContext(Dispatchers.IO) {
         val knownRoutes = db.flightRouteDao().getRoutes(fromCity, toCity)
+        val requestStartedAt = System.currentTimeMillis()
         val liveList = try {
             api.searchFlights(fromCity, toCity, dateStr, knownRoutes)
         } catch (e: Exception) {
@@ -1347,13 +1446,12 @@ class FlightRepository(
             ) {
                 val off = db.officialRouteDao().getOne(fromCity, toCity)
                 if (off?.dataSource == ROUTE_SOURCE_BUNDLED) {
-                    invalidateAndDeleteRoute(fromCity, toCity, e.message ?: "当前畅飞卡不适用该航线")
+                    invalidateAndDeleteRoute(fromCity, toCity, "当前畅飞卡不适用该航线")
                     throw RouteInvalidatedException(fromCity, toCity, "当前畅飞卡不适用该航线")
                 }
             }
             throw e
         }
-        val now = System.currentTimeMillis()
         val entities = liveList.map { s ->
             SeatSnapshotEntity(
                 fromCity = fromCity,
@@ -1368,57 +1466,40 @@ class FlightRepository(
                 normalLeft = s.normalLeft,
                 redeemPrice = s.redeemPrice,
                 cabinCode = s.cabinCode.ifBlank { "M" },
-                queriedAt = now
+                queriedAt = requestStartedAt
             )
         }
-        // 被动自学习：每次单日查票时自动补充未收录航班，并修正该星期未执飞的旧班期
-        val mergedRoutes = if (updateFlightRoutes && liveList.isNotEmpty()) {
-            val dowChar = runCatching { LocalDate.parse(dateStr).dayOfWeek.value.toString() }.getOrNull()
-            val observedNos = liveList.map { it.flightNo }.toSet()
-            val merged = mutableListOf<FlightRouteEntity>()
-            val existingByNo = knownRoutes.associateBy { it.flightNo }
-
-            for (r in knownRoutes) {
-                if (dowChar != null) {
-                    val digits = r.frequency.filter { it in '1'..'7' }.toCollection(mutableSetOf())
-                    if (r.flightNo in observedNos) {
-                        digits.add(dowChar[0])
-                    } else if (digits.size > 1) {
-                        digits.remove(dowChar[0])
-                    }
-                    val nextFreq = digits.sorted().joinToString("")
-                    merged.add(r.copy(frequency = nextFreq))
-                } else {
-                    merged.add(r)
-                }
-            }
-
+        // 被动自学习：每次单日查票时按 (航班号, 起飞, 到达) 合并观测班次，保留同一航班号在不同星期的调时时刻
+        val dow = runCatching { LocalDate.parse(dateStr).dayOfWeek.value }.getOrNull()
+        val mergedRoutes = if (updateFlightRoutes && liveList.isNotEmpty() && dow != null) {
             val fromIata = CityIataMapper.toApiIata(fromCity)
             val toIata = CityIataMapper.toApiIata(toCity)
-            for (s in liveList.distinctBy { "${it.flightNo}|${it.depTime}" }) {
-                if (s.flightNo !in existingByNo) {
-                    merged.add(
-                        FlightRouteEntity(
-                            fromCity = fromCity,
-                            toCity = toCity,
-                            fromIata = fromIata,
-                            toIata = toIata,
-                            flightNo = s.flightNo,
-                            depTime = s.depTime,
-                            arrTime = s.arrTime,
-                            duration = s.duration,
-                            aircraft = s.aircraft,
-                            frequency = dowChar.orEmpty(),
-                            stopover = s.stopover.ifBlank { "直飞" },
-                            season = "official"
-                        )
+            val observedEntities = liveList
+                .distinctBy { Triple(it.flightNo, it.depTime, it.arrTime) }
+                .map { s ->
+                    FlightRouteEntity(
+                        fromCity = fromCity,
+                        toCity = toCity,
+                        fromIata = fromIata,
+                        toIata = toIata,
+                        flightNo = s.flightNo,
+                        depTime = s.depTime,
+                        arrTime = s.arrTime,
+                        duration = s.duration,
+                        aircraft = s.aircraft,
+                        frequency = dow.toString(),
+                        stopover = s.stopover.ifBlank { "直飞" },
+                        season = "official"
                     )
                 }
-            }
-            merged.sortedBy { it.depTime }.takeIf { it.isNotEmpty() }
+            mergeSingleDayObservedSeats(knownRoutes, observedEntities, dow).takeIf { it.isNotEmpty() }
         } else null
 
         db.withTransaction {
+            val calendar = db.calendarCacheDao().getStatus(fromCity, toCity, dateStr)
+            check(calendar == null || calendar.status !in -4..0 || calendar.updatedAt <= requestStartedAt) {
+                "日历状态已更新，请重新查询该日余票"
+            }
             db.seatSnapshotDao().deleteForRouteDate(fromCity, toCity, dateStr)
             if (entities.isNotEmpty()) {
                 db.seatSnapshotDao().upsertAll(entities)

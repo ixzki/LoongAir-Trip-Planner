@@ -3,11 +3,20 @@ package com.loongair.tripplanner
 import android.content.SharedPreferences
 import com.loongair.tripplanner.data.local.AndroidKeyStoreCipher
 import com.loongair.tripplanner.data.local.AuthPrefs
+import com.loongair.tripplanner.data.local.FlightRouteEntity
 import com.loongair.tripplanner.data.local.StringCipher
 import com.loongair.tripplanner.data.remote.DetectedCardInfo
+import com.loongair.tripplanner.data.remote.LoongAirApi
+import kotlinx.coroutines.runBlocking
+import kotlinx.serialization.json.Json
+import okhttp3.OkHttpClient
+import okhttp3.Protocol
+import okhttp3.Response
+import okhttp3.ResponseBody.Companion.toResponseBody
 import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertNotEquals
+import org.junit.Assert.assertThrows
 import org.junit.Assert.assertTrue
 import org.junit.Test
 import java.util.Base64
@@ -86,6 +95,142 @@ class AuthPrefsEncryptionAndMigrationTest {
 
         override fun registerOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener?) = Unit
         override fun unregisterOnSharedPreferenceChangeListener(listener: SharedPreferences.OnSharedPreferenceChangeListener?) = Unit
+    }
+
+    private fun AuthPrefs.login(token: String) = saveSession(
+        token, "test-refresh", "测试", "", "", "", "sample-card-grant", "", "", "now"
+    )
+
+    private fun apiWithReplies(
+        prefs: AuthPrefs, vararg replies: Pair<Int, String>, beforeReply: (Int) -> Unit = {}
+    ): LoongAirApi {
+        val responses = replies.iterator()
+        var index = 0
+        val client = OkHttpClient.Builder().addInterceptor { chain ->
+            beforeReply(index++)
+            val (code, body) = responses.next()
+            Response.Builder().request(chain.request()).protocol(Protocol.HTTP_1_1)
+                .code(code).message("fixture").body(body.toResponseBody()).build()
+        }.build()
+        return LoongAirApi(prefs, httpClient = client)
+    }
+
+    @Test
+    fun lateRefreshAndCardSyncCannotRestoreAnEarlierLogin() {
+        val prefs = AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher())
+        prefs.login("first-session")
+        val original = prefs.current()
+        prefs.clearSession()
+        assertFalse(prefs.updateTokens(original, "late-session", "late-refresh", "later"))
+        assertFalse(prefs.current().isLoggedIn)
+        prefs.login("first-session") // 即使重新登录碰巧得到同一 token，也属于新会话。
+        assertFalse(prefs.updateTokens(original, "late-session", "late-refresh", "later"))
+        assertFalse(prefs.updateCards(original, emptyList(), "old-grant", "旧卡", "", "later"))
+        assertFalse(prefs.touchSessionActivity("first-session", "rotated-late", "later", expectedGeneration = original.sessionGeneration))
+        assertEquals("first-session", prefs.current().sessionToken)
+        assertEquals("sample-card-grant", prefs.current().secCardGrantTid)
+    }
+
+    @Test
+    fun encryptionFailureBeforeApplyPreservesTheWholePreviousSession() {
+        val backing = InMemorySharedPreferences()
+        val delegate = JvmAesGcmCipher()
+        val prefs = AuthPrefs(backing, object : StringCipher by delegate {
+            override fun encrypt(plain: String): String =
+                if (plain == "failed-refresh") "" else delegate.encrypt(plain)
+        })
+        prefs.login("first-session")
+        val before = prefs.current()
+        val stored = backing.getAll()
+        assertThrows(IllegalStateException::class.java) {
+            prefs.updateTokens(before, "newer-session", "failed-refresh", "later")
+        }
+        assertEquals(stored, backing.getAll())
+        assertEquals(before, prefs.current())
+    }
+
+    @Test
+    fun failedProfileAndExpiredCardResponseDoNotReplaceExistingCredentials() = runBlocking {
+        val prefs = AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher())
+        prefs.login("original-session")
+        val before = prefs.current()
+        val badResponses = listOf(500 to "", 200 to "unexpected", 200 to """{"ErrorCode":0,"Result":{}}""",
+            200 to """{"ErrorCode":0,"Result":{"message":"unexpected"}}""")
+        for (response in badResponses) {
+            assertFalse(apiWithReplies(prefs, response).importManualCredentials("unverified-session").ok)
+            assertEquals(before, prefs.current())
+        }
+        val api = apiWithReplies(prefs, 200 to """{"ErrorCode":0,"Result":{"Name":"测试"}}""", 403 to "")
+        assertFalse(api.importManualCredentials("expired-session").ok)
+        assertEquals(before, prefs.current())
+    }
+
+    @Test
+    fun aRefreshResponseArrivingAfterAnotherLoginCannotReplaceItsCredentials() = runBlocking {
+        val prefs = AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher())
+        prefs.login("original-session")
+        val api = apiWithReplies(prefs, 403 to "", 200 to """{"ErrorCode":0,"Result":{"token":"late-session"}}""") { index ->
+            if (index == 1) {
+                prefs.clearSession()
+                prefs.login("replacement-session")
+            }
+        }
+        api.keepaliveSession(force = true)
+        assertEquals("replacement-session", prefs.current().sessionToken)
+    }
+
+    @Test
+    fun rejectedQueriesDoNotExposeTheFullGrantOrInventAnEmptyInventory() = runBlocking {
+        val prefs = AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher())
+        prefs.login("original-session")
+        val api = apiWithReplies(prefs, 200 to """{"ErrorCode":12,"message":"此卡 sample-card-grant 不适用"}""",
+            200 to """{"ErrorCode":0}""", 200 to """{"ErrorCode":0,"Result":{"unexpected":[]}}""")
+        val message = runCatching { api.getCalendar("杭州", "宁波") }.exceptionOrNull()?.message.orEmpty()
+        assertTrue("不适用" in message)
+        assertFalse("sample-card-grant" in message)
+        assertTrue(runCatching { api.getCalendar("杭州", "宁波") }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { api.searchFlights("杭州", "宁波", "2026-12-07", emptyList()) }.exceptionOrNull() is IllegalStateException)
+    }
+
+    @Test
+    fun malformedOrPartialDirectoryCannotBeTreatedAsACompleteList() {
+        val api = apiWithReplies(AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher()))
+        val row = """{"CityName":"杭州","AirportCode":"HGH"}"""
+        listOf("[]", """{"domAirports":[]}""", """{"list":[]}""").forEach {
+            assertTrue(api.parseAirportEndpoints(Json.parseToJsonElement(it)).isEmpty())
+        }
+        val grouped = """{"domCities":{"H":[$row]},"international":[{}]}"""
+        assertEquals("HGH", api.parseAirportEndpoints(Json.parseToJsonElement(grouped)).single().airportCode)
+        val withSiblingMeta = """{"list":[$row],"pageInfo":{"pageNum":1}}"""
+        assertEquals("HGH", api.parseAirportEndpoints(Json.parseToJsonElement(withSiblingMeta)).single().airportCode)
+        val withHotEmpty = """{"A":[$row],"hotCities":[]}"""
+        assertEquals("HGH", api.parseAirportEndpoints(Json.parseToJsonElement(withHotEmpty)).single().airportCode)
+        for (bad in listOf("null", "{}", """{"unknown":[]}""", """{"list":null}""", """[$row,{}]""",
+            """{"list":[$row],"total":2}""", """{"list":[$row],"hasMore":true}""",
+            """{"list":[$row],"pageInfo":{"hasMore":true}}""", """{"metadata":{"list":[]}}""",
+            """{"domAirports":[],"domCities":[{"CityName":"未知城市"}]}""")) {
+            assertThrows(IllegalStateException::class.java) { api.parseAirportEndpoints(Json.parseToJsonElement(bad)) }
+        }
+    }
+
+    @Test
+    fun flightNumbersUseTheOfficialResultOrOneExactScheduledFlight() = runBlocking {
+        val prefs = AuthPrefs(InMemorySharedPreferences(), JvmAesGcmCipher())
+        prefs.login("sample-session")
+        val route = FlightRouteEntity(fromCity = "杭州", toCity = "宁波", fromIata = "HGH", toIata = "NGB",
+            depTime = "08:00", arrTime = "09:00", frequency = "1", flightNo = "GJ1001", aircraft = "old",
+            duration = "1h", stopover = "经停", season = "official")
+        suspend fun lookup(number: String?, vararg routes: FlightRouteEntity): String {
+            val numberField = number?.let { ",\"flightNo\":\"$it\"" }.orEmpty()
+            val json = """{"ErrorCode":0,"Result":{"flightInfos":[{"departureTime":"2026-12-07T08:00","arriveTime":"2026-12-07T09:00"$numberField}]}}"""
+            return apiWithReplies(prefs, 200 to json).searchFlights("杭州", "宁波", "2026-12-07", routes.toList()).single().flightNo
+        }
+        assertEquals("GJ1002", lookup("GJ1002", route))
+        assertEquals("GJ1001", lookup(null, route))
+        assertTrue(runCatching { lookup("unreadable", route) }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { lookup(null, route, route.copy(flightNo = "GJ1002")) }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { lookup(null, route.copy(frequency = "2")) }.exceptionOrNull() is IllegalStateException)
+        assertTrue(runCatching { lookup(null, route.copy(depTime = "08:01")) }.exceptionOrNull() is IllegalStateException)
     }
 
     @Test

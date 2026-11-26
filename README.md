@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-green)](LICENSE)
 
 > 一款专为畅飞卡旅客打造的**纯本地、零抓包、数据私有、高颜值随心飞航网探索与智能往返决策 Android 客户端**。  
-> 支持**官方手机号短信验证码直登**（内嵌网易易盾滑块，免抓包、免系统代理），内置 **75 城 · 410 条全国直飞畅飞卡基准航网**，涵盖**官方适用日期窗口核验**、**近 40 天放票日历与多舱位余票实查**、**多星期智能往返配对**、**精确抢票闹钟**与**双主题设计语言**。  
+> 支持**官方手机号短信验证码直登**（内嵌网易易盾滑块，免抓包、免系统代理），内置 **75 城 · 410 条有向航线的畅飞卡基准航网**，涵盖**官方适用日期窗口核验**、**近 40 天放票日历与多舱位余票实查**、**多星期智能往返配对**、**精确抢票闹钟**与**双主题设计语言**。
 > **GitHub 仓库**：[https://github.com/ixzki/LoongAir-Trip-Planner](https://github.com/ixzki/LoongAir-Trip-Planner)  
 > **最新 Release 下载**：[https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest](https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest)
 
@@ -52,9 +52,9 @@
 
 前往 GitHub Releases 页面下载已混淆压缩的正式版安装包（仅约 `2 MB`，支持 Android 8.0 及以上设备）：
 
-👉 **[前往 Releases 下载 ChangfeiXing-v1.8.2-release.apk](https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest)**
+👉 **[前往 Releases 下载已发布的安装包](https://github.com/ixzki/LoongAir-Trip-Planner/releases/latest)**
 
-1. 下载并安装 **`ChangfeiXing-v1.8.2-release.apk`**；
+1. 下载并安装 Release 页所列的签名 APK；
 2. 安装即内置全网 **75 城 · 410 条畅飞卡航线与 445 条班次时刻**，冷启动全屏动画结束后即可直接浏览全国航网与试算往返；
 3. 前往「**我的**」→「**登录**」，输入手机号并通过内置网易易盾拼图滑块完成短信验证，即可自动识别名下畅飞卡、同步常驻城市实时放票日历与余票。
 
@@ -63,7 +63,7 @@
 ## 🌟 核心功能与架构亮点
 
 - **🗺️ 全国随心飞交互地图与智能排布**
-  - 收录全国 **75 座通航城市、410 条对称畅飞卡航线与 445 条定期航班时刻**，支持单指/双指缩放与拖拽漫游；
+  - 收录 **75 个机场、410 个航线方向（205 对双向）、445 条班次时刻**。时刻覆盖 393 个方向，其中 85 个方向当前收录的班次全部经停，另有 17 个方向待补充时刻。地图支持单指、双指缩放与拖拽漫游。
   - **去重弧线 + 地名防重叠**：概览模式对双向航线去重并用轻盈二次贝塞尔弧线绘制，结合实时屏幕边界碰撞检测按枢纽重要性标注城市，告别东部与川渝地名堆叠；
   - **枢纽规模排序 + 常驻优先**：地图下方枢纽胶囊按**通航目的地数量**从高到低排名（`杭州`、`长春`、`银川`、`宁波`、`哈尔滨`……），航线列表自动优先置顶当前**常驻出发城市**的出入港航线；
   - **多机场城市独立消歧**：精准区分并映射 `成都天府 (TFU)` / `成都双流 (CTU)`、`北京首都 (PEK)` / `北京大兴 (PKX)`、`上海浦东 (PVG)` / `上海虹桥 (SHA)`、`遵义新舟 (ZYI)` / `遵义茅台 (WMT)`。
@@ -112,13 +112,17 @@
 $env:JAVA_HOME = "C:\Program Files\Eclipse Adoptium\jdk-17.0.21.10002-hotspot"
 $env:ANDROID_HOME = "$env:LOCALAPPDATA\Android\Sdk"
 
-# 运行全部单元测试、Lint 静态检查并构建 Debug 与 R8 压缩版 Release APK
-.\gradlew.bat testDebugUnitTest lintDebug assembleDebug assembleRelease
+# 本地检查，生成可安装的 Debug 包及用于验证 R8 的未签名包
+.\gradlew.bat "-PallowUnsignedRelease=true" testDebugUnitTest lintDebug assembleDebug assembleRelease
 ```
 
-输出 APK 路径：
-- Release APK（已开启 R8 混淆与资源压缩）：`app/build/outputs/apk/release/ChangfeiXing-v1.8.2-release.apk`
-- Debug APK：`app/build/outputs/apk/debug/ChangfeiXing-v1.8.2-debug.apk`
+若项目放在 Windows 中文目录，可先用 `subst U: "项目绝对路径"` 映射到空闲盘符，在 `U:\` 执行命令，完成后退出该盘符并执行 `subst U: /D`。
+
+- 可直接安装的调试包位于 `app/build/outputs/apk/debug/ChangfeiXing-v1.8.3-debug.apk`。
+- 未签名的 R8 验证包位于 `app/build/outputs/apk/release/ChangfeiXing-v1.8.3-release-unsigned.apk`。
+- 正式构建使用 `.\gradlew.bat assembleRelease`。提供 `LOONGAIR_KEYSTORE_PATH`、`LOONGAIR_KEYSTORE_PASSWORD`、`LOONGAIR_KEY_ALIAS`、`LOONGAIR_KEY_PASSWORD` 和固定的 `LOONGAIR_RELEASE_CERT_SHA256` 后，输出 `ChangfeiXing-v1.8.3-release.apk`。签名文件和密码保存在本机或 CI 的私密配置中。
+- GitHub 发布作业从仓库 Secrets 读取 `LOONGAIR_KEYSTORE_BASE64` 及上述两个密码、密钥别名，从仓库 Variables 读取证书 SHA-256。发布标签必须与 APK 版本一致并指向当前提交。
+- 已公开的 v1.8.1 和 v1.8.2 使用同一证书，SHA-256 为 `b78b1ebf7017ce32f4979c6c9a8101fe45ad8341814a30f015496de41b303e91`。若要让既有安装直接升级，需在符合 Android 签名兼容要求的前提下发布，并在旧版保存行程后覆盖安装验证。直接更换为另一张无签名继承关系的证书会阻止原地升级。
 
 ---
 
@@ -133,7 +137,7 @@ LoongAir-Trip-Planner/
 │   └── screenshots/                     # 实机界面预览截图
 ├── app/
 │   ├── build.gradle.kts                 # 应用构建配置与自动化版本 APK 命名
-│   ├── schemas/                         # Room 数据库迁移 Schema (v4 - v6)
+│   ├── schemas/                         # Room 数据库迁移 Schema (v4 - v7)
 │   └── src/
 │       ├── main/
 │       │   ├── assets/

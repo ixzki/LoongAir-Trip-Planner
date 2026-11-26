@@ -65,6 +65,7 @@ import androidx.compose.runtime.SideEffect
 import androidx.compose.runtime.compositionLocalOf
 import androidx.compose.runtime.derivedStateOf
 import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableIntStateOf
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
 import androidx.compose.runtime.rememberCoroutineScope
@@ -117,11 +118,19 @@ internal fun RoundTripCandidateCard(
     onSavePlan: (FlightCandidate, FlightCandidate) -> Unit
 ) {
     val p = LocalLoongPalette.current
-    var selectedOutIdx by remember(candidate.destinationCity, candidate.outboundDate) { mutableStateOf(0) }
-    var selectedRetIdx by remember(candidate.destinationCity, candidate.returnDate) { mutableStateOf(0) }
-
-    val safeOut = candidate.outboundFlights.getOrElse(selectedOutIdx) { candidate.outboundFlights.first() }
-    val safeRet = candidate.returnFlights.getOrElse(selectedRetIdx) { candidate.returnFlights.first() }
+    var selectedOut by remember(candidate.originCity, candidate.destinationCity, candidate.outboundDate) {
+        mutableStateOf<Pair<String, String>?>(null)
+    }
+    var selectedRet by remember(candidate.originCity, candidate.destinationCity, candidate.returnDate) {
+        mutableStateOf<Pair<String, String>?>(null)
+    }
+    val safeOut = candidate.outboundFlights.firstOrNull { (it.flightNo to it.depTime) == selectedOut }
+        ?: candidate.outboundFlights.firstOrNull() ?: return
+    val compatibleReturns = candidate.returnFlights.filter {
+        RoundTripMatcher.isFeasibleFlightPair(candidate.outboundDate, safeOut, candidate.returnDate, it)
+    }
+    val safeRet = compatibleReturns.firstOrNull { (it.flightNo to it.depTime) == selectedRet }
+        ?: compatibleReturns.firstOrNull() ?: return
 
     val chevronRotation by animateFloatAsState(
         targetValue = if (isExpanded) 180f else 0f,
@@ -129,10 +138,12 @@ internal fun RoundTripCandidateCard(
         label = "expandChevron"
     )
 
-    val stayText = if (candidate.maxStayHours >= 24) {
-        "可玩约 ${candidate.maxStayHours / 24}天${candidate.maxStayHours % 24}小时"
-    } else {
-        "可玩约 ${candidate.maxStayHours}小时"
+    val minutes = RoundTripMatcher.stayMinutes(candidate.outboundDate, safeOut, candidate.returnDate, safeRet) ?: return
+    val stayText = buildString {
+        append("可停留 ")
+        if (minutes >= 1440) append("${minutes / 1440}天")
+        if (minutes % 1440 >= 60) append("${minutes % 1440 / 60}小时")
+        if (minutes % 60 != 0L) append("${minutes % 60}分钟")
     }
 
     SoftCard(
@@ -208,11 +219,11 @@ internal fun RoundTripCandidateCard(
             horizontalArrangement = Arrangement.spacedBy(6.dp),
             verticalAlignment = Alignment.CenterVertically
         ) {
-            CalendarStatusPill("去", candidate.outCalendarStatus, candidate.outMaxSeats)
-            CalendarStatusPill("返", candidate.retCalendarStatus, candidate.retMaxSeats)
+            CalendarStatusPill("去", candidate.outCalendarStatus, safeOut.liveSecCardLeft)
+            CalendarStatusPill("返", candidate.retCalendarStatus, safeRet.liveSecCardLeft)
             Spacer(Modifier.weight(1f))
             Text(
-                "去${candidate.outboundFlights.size}班 · 返${candidate.returnFlights.size}班",
+                "去${candidate.outboundFlights.size}班 · 可接返程${compatibleReturns.size}班",
                 style = LoongType.footnote.copy(fontFeatureSettings = "tnum"),
                 color = p.textTertiary
             )
@@ -274,11 +285,12 @@ internal fun RoundTripCandidateCard(
                 }
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    candidate.outboundFlights.forEachIndexed { idx, f ->
+                    candidate.outboundFlights.forEach { f ->
                         FlightOptionRow(
                             flight = f,
-                            selected = idx == selectedOutIdx,
-                            onClick = { selectedOutIdx = idx }
+                            calendarStatus = candidate.outCalendarStatus,
+                            selected = f == safeOut,
+                            onClick = { selectedOut = f.flightNo to f.depTime }
                         )
                     }
                 }
@@ -295,11 +307,12 @@ internal fun RoundTripCandidateCard(
                 }
                 Spacer(Modifier.height(8.dp))
                 Column(verticalArrangement = Arrangement.spacedBy(7.dp)) {
-                    candidate.returnFlights.forEachIndexed { idx, f ->
+                    compatibleReturns.forEach { f ->
                         FlightOptionRow(
                             flight = f,
-                            selected = idx == selectedRetIdx,
-                            onClick = { selectedRetIdx = idx }
+                            calendarStatus = candidate.retCalendarStatus,
+                            selected = f == safeRet,
+                            onClick = { selectedRet = f.flightNo to f.depTime }
                         )
                     }
                 }
@@ -356,11 +369,11 @@ private fun CalendarStatusPill(prefix: String, status: Int?, liveMaxSeats: Int?)
         status == -2 -> Triple("${prefix}不可用", p.dangerBg, p.danger)
         status == -3 -> Triple("${prefix}已截止", p.dangerBg, p.danger)
         status == -4 -> Triple("${prefix}无航班", p.subtleSurface, p.textSecondary)
+        status == -1 -> Triple("${prefix}未开放", p.warningBg, p.warning)
         liveMaxSeats != null && liveMaxSeats > 0 -> Triple("${prefix}余${liveMaxSeats}张", p.successBg, p.success)
         liveMaxSeats != null && liveMaxSeats == 0 -> Triple("${prefix}畅飞无票", p.dangerBg, p.danger)
         status == 1 -> Triple("${prefix}可兑", p.successBg, p.success)
         status == 0 -> Triple("${prefix}已兑完", p.dangerBg, p.danger)
-        status == -1 -> Triple("${prefix}未开放", p.warningBg, p.warning)
         else -> Triple("${prefix}待查", p.subtleSurface, p.textSecondary)
     }
     TonePillBadge(
@@ -374,6 +387,7 @@ private fun CalendarStatusPill(prefix: String, status: Int?, liveMaxSeats: Int?)
 @Composable
 private fun FlightOptionRow(
     flight: FlightCandidate,
+    calendarStatus: Int?,
     selected: Boolean,
     onClick: () -> Unit
 ) {
@@ -420,7 +434,9 @@ private fun FlightOptionRow(
                     color = p.textTertiary
                 )
             }
-            if (flight.liveSecCardLeft != null) {
+            if (calendarStatus != null && calendarStatus in -4..-1) {
+                CalendarStatusPill("", calendarStatus, null)
+            } else if (flight.liveSecCardLeft != null) {
                 val hasSeat = flight.liveSecCardLeft > 0
                 Surface(
                     color = if (hasSeat) p.successBg else p.dangerBg,
@@ -552,7 +568,7 @@ fun CityPickerFullScreenContent(
     val listState = rememberLazyListState()
     var query by remember(request.key) { mutableStateOf("") }
     var activeScrubLetter by remember(request.key) { mutableStateOf<Char?>(null) }
-    var indexBarHeightPx by remember { mutableStateOf(1) }
+    var indexBarHeightPx by remember { mutableIntStateOf(1) }
 
     // 与「卡片」「设置」子页完全一致：暖纸底直通状态栏 + 深色状态栏图标，退出后自动恢复主题状态栏
     val view = LocalView.current
@@ -1018,10 +1034,10 @@ internal fun TimeWindowPickerDialog(
     onConfirm: (Int, Int, Int, Int) -> Unit
 ) {
     val p = LocalLoongPalette.current
-    var os by remember { mutableStateOf(outStart) }
-    var oe by remember { mutableStateOf(outEnd) }
-    var rs by remember { mutableStateOf(retStart) }
-    var re by remember { mutableStateOf(retEnd) }
+    var os by remember { mutableIntStateOf(outStart) }
+    var oe by remember { mutableIntStateOf(outEnd) }
+    var rs by remember { mutableIntStateOf(retStart) }
+    var re by remember { mutableIntStateOf(retEnd) }
 
     AlertDialog(
         onDismissRequest = onDismiss,

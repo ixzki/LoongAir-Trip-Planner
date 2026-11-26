@@ -39,8 +39,8 @@ class AndroidKeyStoreCipher(
             System.arraycopy(iv, 0, combined, 1, iv.size)
             System.arraycopy(cipherBytes, 0, combined, 1 + iv.size, cipherBytes.size)
             PREFIX + Base64.getEncoder().encodeToString(combined)
-        } catch (_: Exception) {
-            ""
+        } catch (e: Exception) {
+            throw IllegalStateException("无法安全保存凭据，请稍后重试", e)
         }
     }
 
